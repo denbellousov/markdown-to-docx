@@ -1,41 +1,41 @@
-# Списки
+# Lists
 
-Маркированный список с вложенностью:
+A bulleted list with nesting:
 
-- Первый пункт
-- Второй пункт
-  - Вложенный пункт второго уровня
-    - Пункт третьего уровня
-  - Ещё пункт второго уровня
-- Последний пункт маркированного списка
+- First item
+- Second item
+  - Nested second-level item
+    - Third-level item
+  - Another second-level item
+- Last item of the bulleted list
 
-Нумерованный список с трёх:
+A numbered list starting at three:
 
-3. Третий пункт
-4. Четвёртый пункт
-   1. Вложенный нумерованный
-   2. Второй вложенный
-5. Пятый пункт
+3. Third item
+4. Fourth item
+   1. Nested numbered item
+   2. Second nested item
+5. Fifth item
 
-Два нумерованных списка подряд, разделённые только комментарием:
+Two numbered lists in a row, separated only by a comment:
 
-1. Альфа
-2. Бета
+1. Alpha
+2. Beta
 
-<!-- граница списков -->
+<!-- list boundary -->
 
-1. Гамма
-2. Дельта
+1. Gamma
+2. Delta
 
-1) Эпсилон со скобкой
-2) Дзета со скобкой
+1) Epsilon with a parenthesis
+2) Zeta with a parenthesis
 
-Многоабзацный пункт:
+A multi-paragraph item:
 
-1. Первый абзац пункта.
+1. First paragraph of the item.
 
-   Второй абзац того же пункта.
+   Second paragraph of the same item.
 
-2. Следующий пункт.
+2. Next item.
 
-Финальный абзац.
+Final paragraph.

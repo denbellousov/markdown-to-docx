@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import argparse
+import contextvars
 import datetime as dt
 import errno
 import functools
 import itertools
+import json
+import locale
 import os
 import re
 import shutil
+import subprocess
 import sys
 import unicodedata
 import zipfile
@@ -44,7 +48,7 @@ try:  # Pillow нужен только для точного замера шир
 except ImportError:  # pragma: no cover
     ImageFont = None
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ---------------------------------------------------------------- константы
 
@@ -53,8 +57,8 @@ MARGIN, HDR_FTR = 1134, 720
 TEXT_W = {o: w - 2 * MARGIN for o, (w, _) in PAGE.items()}  # 9638 / 14570
 TEXT_H = {o: h - 2 * MARGIN for o, (_, h) in PAGE.items()}  # 14570 / 9638
 LINE_H = 262      # шаг строки ячейки: HN 11 pt при line=240 — 13,1 pt (у Arial меньше)
-LETTER = {"portrait": "К", "landscape": "А"}
-STEP = 360        # отступ уровня списка и цитаты
+LETTER = {"portrait": "К", "landscape": "А"}  # convert()["sections"] — как в 1.0.0, на любом языке
+STEP = 360       # отступ уровня списка и цитаты
 MAX_INDENT = 8 * STEP  # глубже 8 уровней отступ не растёт: текст и таблица не уходят за правое поле
 CELL_PAD = 216    # поля ячейки 108 + 108
 HN, MONO = "Helvetica Neue", "Menlo"
@@ -93,6 +97,90 @@ RPR_ORDER = (
     "rStyle rFonts b bCs i iCs caps smallCaps strike dstrike outline shadow emboss imprint "
     "noProof snapToGrid vanish webHidden color spacing w kern position sz szCs highlight u "
     "effect bdr shd fitText vertAlign rtl cs em lang eastAsianLayout specVanish oMath").split()
+
+
+# ---------------------------------------------------------------- язык интерфейса
+
+# Код → самоназвание для переключателя; en — исходный язык: английские строки кода и есть ключи
+# переводов locales/<код>.json, строка без перевода выводится по-английски
+LANGUAGES = {"ar": "العربية", "de": "Deutsch", "en": "English", "es": "Español", "fr": "Français",
+             "hi": "हिन्दी", "ja": "日本語", "pt": "Português", "ru": "Русский", "zh": "简体中文"}
+RTL = frozenset({"ar"})  # пишутся справа налево
+LOCALES =Path(__file__).resolve().parent / "locales"
+LANG = contextvars.ContextVar("md2docx_lang", default=None)  # None — язык системы; сервер задаёт свой на запрос
+
+
+@functools.cache
+def catalog(lang):
+    """Переводы языка lang: {английская строка: перевод}; нет файла — пустой."""
+    try:
+        return json.loads((LOCALES / f"{lang}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def pick_language(tags):
+    """Первый поддерживаемый язык из тегов вида ru_RU.UTF-8, pt-BR, zh-Hans; иначе en."""
+    for tag in tags:
+        code = re.split(r"[-_.@]", tag.strip(), maxsplit=1)[0].lower()
+        if code in LANGUAGES:
+            return code
+    return "en"
+
+
+def os_languages():
+    """Языки интерфейса ОС по предпочтению: у приложения, открытого из Finder или Проводника,
+    переменных локали нет."""
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            return re.findall(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]+)*", out)
+        if sys.platform == "win32":
+            import ctypes
+            return [locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), "")]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return []
+
+
+@functools.cache
+def system_language():
+    """MD2DOCX_LANG, затем LANGUAGE, LC_ALL, LC_MESSAGES, LANG, затем язык ОС."""
+    tags = [os.environ.get("MD2DOCX_LANG", ""), *os.environ.get("LANGUAGE", "").split(":")]
+    tags += [os.environ.get(name, "") for name in ("LC_ALL", "LC_MESSAGES", "LANG")]
+    tags = [t for t in tags if t.strip() and t.split(".")[0] not in ("C", "POSIX")]
+    return pick_language(tags or os_languages())
+
+
+def language():
+    """Текущий язык интерфейса: заданный для этого потока или системный."""
+    return LANG.get() or system_language()
+
+
+def tr(text, **values):
+    """Строка интерфейса на текущем языке; values подставляются в её {имена}."""
+    lang = language()
+    if lang != "en":
+        text = catalog(lang).get(text, text)
+    if LANG.get() in RTL:  # страница справа налево: строки и пути изолированы, иначе «02-a.md» видно
+        # как «a.md-02»; в терминале (LANG не задан) — без невидимых символов: они попали бы в скопированный путь
+        values = {k: v if isinstance(v, (int, float)) else f"⁨{v}⁩" for k, v in values.items()}
+    return text.format(**values) if values else text
+
+
+def summary(stats):
+    """Итог конвертации — для «Готово: …» в CLI и для списка результатов в браузере."""
+    letters = ", ".join(tr("L") if s == LETTER["landscape"] else tr("P") for s in stats["sections"])
+    return tr("sections: {sections} ({letters}), tables: {tables}, auto-landscape: {auto}",
+              sections=len(stats["sections"]), letters=letters, tables=stats["tables"],
+              auto=stats["auto_landscape_tables"])
+
+
+def fonts_summary(changed):
+    """Итог --fix-fonts: какие подсказки каким шрифтам возвращены."""
+    fixed = ", ".join(f"{name} ({', '.join(tags)})" for name, tags in changed.items())
+    return tr("font hints restored: {fonts}", fonts=fixed)
 STYLE_ORDER = (
     "name aliases basedOn next link autoRedefine hidden uiPriority semiHidden unhideWhenUsed "
     "qFormat locked personal personalCompose personalReply rsid pPr rPr tblPr trPr tcPr "
@@ -774,8 +862,9 @@ class Converter:
         self.code_p = None         # абзац последнего блока кода
 
     def warn(self, msg):
-        where = self.md_path.name + (f", строка {self.line}" if self.line else "")
-        self.warnings.append(f"{where}: {msg}")
+        name = self.md_path.name
+        self.warnings.append(tr("{file}, line {line}: {message}", file=name, line=self.line, message=msg)
+                             if self.line else f"{name}: {msg}")
 
     # --- план разделов (§4)
 
@@ -791,9 +880,9 @@ class Converter:
                     continue
                 if not html_text(node.content).strip():  # комментарий или теги без текста
                     if COMMENT_RE.sub("", node.content).strip():
-                        self.warn("HTML-блок без текста пропущен")
+                        self.warn(tr("HTML block without text skipped"))
                     elif not node.content.rstrip().endswith("-->"):
-                        self.warn("незакрытый HTML-комментарий — остаток документа пропущен")
+                        self.warn(tr("unclosed HTML comment — the rest of the document is skipped"))
                     continue
             elif node.type == "paragraph":
                 parts = split_pagebreaks(node)
@@ -945,7 +1034,7 @@ class Converter:
                 if visible(block):
                     prev = block
         if not any(visible(b) for _, bs in sections for b in bs):  # и абзац из одного <br>
-            self.warn("в документе нет видимого содержимого — получится одна пустая страница")
+            self.warn(tr("the document has no visible content — the result is a single empty page"))
         if self.after_table or len(self.body) == 1:
             # таблица в конце — носитель 1 pt, как у разрыва раздела (разделитель 8 pt под таблицей,
             # дошедшей до низа страницы, дал бы пустую последнюю страницу); пустой md — пустой абзац
@@ -1024,7 +1113,7 @@ class Converter:
         if parts is None:
             parts = [kids]
         else:  # сюда доходят только абзацы внутри списков и цитат
-            self.warn("маркер разрыва страницы внутри списка или цитаты игнорируется")
+            self.warn(tr("page break marker inside a list or quote is ignored"))
             parts = [p for p in parts if p] or ([[]] if num else [])
         for part in parts:
             self.text_par(part, ctx, num)
@@ -1115,15 +1204,15 @@ class Converter:
     def html_block(self, node, ctx):
         kind = marker_kind(node.content)
         if kind:
-            what = "разрыва страницы" if kind == "pagebreak" else "ориентации"
-            self.warn(f"маркер {what} внутри списка или цитаты игнорируется")
+            self.warn(tr("page break marker inside a list or quote is ignored") if kind == "pagebreak"
+                      else tr("orientation marker inside a list or quote is ignored"))
             return
         text = html_text(node.content).strip()
         if not text:
             if COMMENT_RE.sub("", node.content).strip():
-                self.warn("HTML-блок без текста пропущен")
+                self.warn(tr("HTML block without text skipped"))
             return
-        self.warn("HTML-блок: теги вырезаны, текст оставлен обычным абзацем")
+        self.warn(tr("HTML block: tags removed, the text is kept as a plain paragraph"))
         self.text_par(inline_kids(SyntaxTreeNode(MD.parseInline(text))), ctx)
 
     # --- таблицы (§3.4)
@@ -1181,7 +1270,8 @@ class Converter:
                 return ("box", (width, height) if height <= limit else (width * limit // height, limit), fmt)
             except Exception:  # битый файл — в ячейке будет заглушка
                 pass
-        return ("text", f"[изображение: {one_line(plain(flatten(node.children)))}]", fmt | {"i"})
+        alt = one_line(plain(flatten(node.children)))
+        return ("text", tr("[image: {alt}]").format(alt=alt), fmt | {"i"})  # как в image()
 
     def table(self, node, ctx):
         rows, aligns, mins, maxs, softs, areas = self.table_info(node)
@@ -1189,8 +1279,8 @@ class Converter:
         widths, fits = column_widths(mins, softs, maxs, areas, total)
         orient = "landscape" if self.width == TEXT_W["landscape"] else "portrait"
         if not fits:
-            page = "альбомную" if orient == "landscape" else "книжную"
-            self.warn(f"таблица не влезает в {page} страницу без разрыва слов")
+            self.warn(tr("the table does not fit a landscape page without breaking words") if orient == "landscape"
+                      else tr("the table does not fit a portrait page without breaking words"))
         # шапка без текста и картинок не выводится: пустой серой полосы нет
         headed = len(rows) == 1 or any(kind == "image" or kind == "text" and val.strip()
                                        for cell in rows[0] for kind, val, _ in cell)
@@ -1207,7 +1297,7 @@ class Converter:
         if not top:
             for _, line in self.break_rows(node):
                 self.line = line + 1
-                self.warn("маркер разрыва страницы внутри списка или цитаты игнорируется")
+                self.warn(tr("page break marker inside a list or quote is ignored"))
 
     def table_el(self, rows, headed, aligns, widths, total, indent, orient):
         """w:tbl из строк rows по готовой сетке widths; headed — первая строка шапка."""
@@ -1263,7 +1353,7 @@ class Converter:
         for kind, val, fmt in coalesce(pieces, bold):
             if kind == "text":
                 if "<!--" in val and "code" not in fmt:  # markdown-it оставил его текстом
-                    self.warn("незакрытый HTML-комментарий в строке — выведен как текст")
+                    self.warn(tr("unclosed inline HTML comment — shown as text"))
                 # символ без глифа в HN, но с глифом в Arial — своим прогоном Arial; код не трогаем
                 for arial, part in itertools.groupby(val, lambda ch: "code" not in fmt and arial_only(ch)):
                     parent.append(make_run("".join(part), fmt | {"arial"} if arial else fmt))
@@ -1279,9 +1369,10 @@ class Converter:
             elif kind == "badlink":
                 shown = unquote(val)
                 shown = shown if len(shown) <= 60 else shown[:60] + "…"
-                self.warn(f"ссылка не http(s), mailto или tel: {shown} — выведена текстом без гиперссылки")
+                self.warn(tr("link is not http(s), mailto or tel: {link} — shown as text without a hyperlink",
+                             link=shown))
             elif kind == "image":
-                parent.append(self.image(val, fmt, max_w))
+                parent.extend(self.image(val, fmt, max_w))
 
     def image(self, node, fmt, max_w):
         src = str(node.attrs.get("src") or "")
@@ -1290,12 +1381,12 @@ class Converter:
         shown = src[:40] + "…" if src.lower().startswith("data:") and len(src) > 40 else unquote(src)
         path = self.local_file(src)
         if path is None:
-            self.warn(f"картинка не найдена или удалённая: {shown} — вставлена заглушка")
+            self.warn(tr("image not found or remote: {image} — a placeholder is inserted", image=shown))
         elif path.stat().st_size > MAX_IMAGE_BYTES:
-            self.warn(f"картинка больше 50 МБ: {shown} — вставлена заглушка")
+            self.warn(tr("image larger than 50 MB: {image} — a placeholder is inserted", image=shown))
         else:
             if not path.resolve().is_relative_to(self.md_path.parent.resolve()):
-                self.warn(f"картинка вне каталога документа: {shown}")
+                self.warn(tr("image outside the document's folder: {image}", image=shown))
             try:
                 info = Image.from_file(str(path))
                 width, height = info.px_width * 914400 // 96, info.px_height * 914400 // 96  # 96 dpi
@@ -1314,10 +1405,15 @@ class Converter:
                 inline.docPr.set("name", f"Picture {self.pictures}")
                 if alt:
                     inline.docPr.set("descr", alt)
-                return E("w:r", None, E("w:drawing", None, inline))
+                return [E("w:r", None, E("w:drawing", None, inline))]
             except Exception as exc:  # битый файл: python-docx бросает и голый Exception
-                self.warn(f"картинка {shown} не вставлена ({exc.__class__.__name__}) — вставлена заглушка")
-        return make_run(f"[изображение: {alt}]", fmt | {"i", "gray"})
+                self.warn(tr("image {image} not inserted ({error}) — a placeholder is inserted",
+                             image=shown, error=exc.__class__.__name__))
+        # format, а не tr(…, alt=): изолирующие символы страницы справа налево — не текст документа;
+        # буквы без глифа в HN (арабская заглушка) — прогоном Arial, как в тексте
+        text, fmt = tr("[image: {alt}]").format(alt=alt), fmt | {"i", "gray"}
+        return [make_run("".join(part), fmt | {"arial"} if arial else fmt)
+                for arial, part in itertools.groupby(text, arial_only)]
 
     def local_file(self, src):
         if re.match(r"[A-Za-z][A-Za-z0-9+.-]+:", src):  # http:, https:, data:, file:
@@ -1332,7 +1428,7 @@ class Converter:
 
 # ---------------------------------------------------------------- точка входа
 
-NOT_TEXT = "похоже на UTF-16 без BOM или двоичный файл — сохраните в UTF-8"
+NOT_TEXT = "looks like UTF-16 without BOM or a binary file — save it as UTF-8"
 
 
 def overwritable(path):
@@ -1366,8 +1462,8 @@ def refuse_if_open_in_word(path):
     found = next((name for name in names if unicodedata.normalize("NFC", name).casefold() == lock.casefold()),
                  None)
     if found:
-        raise FileExistsError(f"{path}: файл открыт в Word (рядом {found}) — закройте его или "
-                              f"запустите с --force")
+        raise FileExistsError(tr("{path}: the file is open in Word ({lock} is next to it) — close it "
+                                 "or run with --force", path=path, lock=found))
 
 
 def convert(md_path, out_path, *, landscape=False, auto_landscape=True, force=False) -> dict:
@@ -1394,15 +1490,15 @@ def convert(md_path, out_path, *, landscape=False, auto_landscape=True, force=Fa
         depth = sum(t.nesting for t in tokens[:deep + 1]
                     if t.type.startswith(("blockquote", "bullet_list", "ordered_list")))
         conv.line = tokens[deep].map[0] + 1 if tokens[deep].map else None
-        conv.warn(f"часть документа глубже {depth - 1} уровней вложенности пропущена")
+        conv.warn(tr("content nested deeper than {depth} levels is skipped", depth=depth - 1))
     sections, auto_tables = conv.run(root)
     if out_path.is_dir():  # иначе отказ ниже отправил бы к --force, который тоже не поможет
         raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(out_path))
     if out_path.exists() and not force:
         refuse_if_open_in_word(out_path)
     if out_path.exists() and not force and not overwritable(out_path):
-        raise FileExistsError(f"{out_path} уже существует и правился после конвертации или создан не "
-                              f"md2docx — не перезаписываю; чтобы перезаписать, добавьте --force")
+        raise FileExistsError(tr("{path} already exists and was edited after conversion or not created "
+                                 "by md2docx — not overwriting; add --force to overwrite", path=out_path))
     # символьная ссылка остаётся ссылкой — заменяется файл, на который она указывает (как в 0.1.1)
     dest = out_path.resolve() if out_path.is_symlink() else out_path
     if dest.is_file() and not os.access(dest, os.W_OK):  # замена файла молча обошла бы защиту от записи
@@ -1429,6 +1525,15 @@ def convert(md_path, out_path, *, landscape=False, auto_landscape=True, force=Fa
     }
 
 
+class DocxError(ValueError):
+    """Не docx или слишком велик. Аргумент — функция, которая возвращает текст: он переводится
+    при показе, а не при создании (браузер хранит ошибку .docx и показывает её на языке каждого
+    следующего запроса)."""
+
+    def __str__(self):
+        return self.args[0]()
+
+
 def fix_fonts(path, *, force=False) -> dict:
     """Вернуть в fontTable готового docx подсказки FONT_ENTRIES, которые Word для Mac стирает
     при сохранении (§3.2); → {шрифт: [восстановленные поля]}, пустой — файл не тронут."""
@@ -1439,23 +1544,23 @@ def fix_fonts(path, *, force=False) -> dict:
             # docx-бомба: размеры проверяются по заявленным, а читается не дальше заявленного —
             # read() без предела распаковывает до гигабайта за вызов, bzip2 и lzma — без предела вовсе
             if any(i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) for i in infos):
-                raise ValueError("не docx или файл повреждён")  # Word сжимает только deflate
+                raise DocxError(lambda: tr("not a docx file or the file is damaged"))  # Word сжимает только deflate
             if sum(i.file_size for i in infos) > UNPACKED_LIMIT:
-                raise ValueError(f"в распакованном виде больше {UNPACKED_LIMIT >> 20} МБ — "
-                                 f"слишком большой для docx")
+                raise DocxError(lambda: tr("more than {size} MB unpacked — too large for a docx",
+                                           size=UNPACKED_LIMIT >> 20))
             if sum(i.file_size for i in infos if i.filename in MARKUP_PARTS) > MARKUP_LIMIT:
-                raise ValueError(f"текст и стили в распакованном виде больше {MARKUP_LIMIT >> 20} МБ — "
-                                 f"слишком большой для docx")
+                raise DocxError(lambda: tr("text and styles take more than {size} MB unpacked — too large for a docx",
+                                           size=MARKUP_LIMIT >> 20))
             items = []
             for info in infos:
                 with z.open(info) as f:
                     items.append((info, f.read(info.file_size)))
     except (zipfile.BadZipFile, zlib.error,  # не zip, обрезан, испорчено сжатие
             RuntimeError) as exc:  # член зашифрован или сжат неизвестным методом
-        raise ValueError("не docx или файл повреждён") from exc
+        raise DocxError(lambda: tr("not a docx file or the file is damaged")) from exc
     parts = {info.filename: data for info, data in items}
     if FONT_TABLE not in parts:
-        raise ValueError(f"в файле нет {FONT_TABLE} — это не docx")
+        raise DocxError(lambda: tr("the file has no {part} — not a docx", part=FONT_TABLE))
     try:
         fonts = parse_xml(parts[FONT_TABLE])
         used = {rf.get(qn("w:" + attr))
@@ -1463,7 +1568,7 @@ def fix_fonts(path, *, force=False) -> dict:
                 for rf in parse_xml(parts[part]).iter(qn("w:rFonts"))
                 for attr in ("ascii", "hAnsi", "cs", "eastAsia")}
     except etree.XMLSyntaxError as exc:  # архив цел, а XML части оборван или испорчен
-        raise ValueError("не docx или файл повреждён") from exc
+        raise DocxError(lambda: tr("not a docx file or the file is damaged")) from exc
     changed = {}
     for name, props in FONT_ENTRIES:
         font = next((f for f in fonts.findall(qn("w:font")) if f.get(qn("w:name")) == name), None)
@@ -1506,92 +1611,93 @@ def describe_error(exc, src):
     name = str(getattr(exc, "filename", None) or "")
     where = f": {name}" if name and name != str(src) else ""  # путь называем, если это не сам исходник
     if isinstance(exc, FileNotFoundError):
-        return "файл или каталог не найден" + where
+        return tr("file or folder not found") + where
     if isinstance(exc, IsADirectoryError):
-        return "это каталог, а не файл" + where
+        return tr("this is a folder, not a file") + where
     if isinstance(exc, PermissionError):
-        return "нет доступа" + where
+        return tr("permission denied") + where
     if isinstance(exc, UnicodeDecodeError):
-        return NOT_TEXT if exc.reason == NOT_TEXT else "файл не в кодировке UTF-8"
+        return tr(NOT_TEXT) if exc.reason == NOT_TEXT else tr("the file is not UTF-8 encoded")
     if getattr(exc, "errno", None):  # нет места, только чтение и т. п. — текст ОС английский
-        return f"ошибка ввода-вывода (errno {exc.errno}: {exc.strerror})" + where
+        return tr("I/O error (errno {errno}: {message})", errno=exc.errno, message=exc.strerror) + where
     return str(exc)
 
 
-class RuParser(argparse.ArgumentParser):
-    """argparse с русскими сообщениями: своего перевода у argparse нет."""
-    MESSAGES = (("the following arguments are required", "не указаны обязательные аргументы"),
-                ("unrecognized arguments", "неизвестные аргументы"),
-                ("expected one argument", "ожидается одно значение"),
-                ("ambiguous option", "неоднозначный параметр"),
-                ("ignored explicit argument", "значение не предусмотрено"),
-                ("argument ", "параметр "))
+def internal_error(exc):
+    """Непредвиденное исключение — одной строкой для пользователя."""
+    return tr("internal error ({error})", error=f"{exc.__class__.__name__}: {exc}")
+
+
+class Parser(argparse.ArgumentParser):
+    """argparse с сообщениями на языке интерфейса: своего перевода у argparse нет."""
+    MESSAGES = ("the following arguments are required", "unrecognized arguments", "expected one argument",
+                "ambiguous option", "ignored explicit argument")
 
     def format_usage(self):
-        return super().format_usage().replace("usage:", "использование:", 1)
+        return super().format_usage().replace("usage:", tr("usage:"), 1)
 
     def format_help(self):
-        return super().format_help().replace("usage:", "использование:", 1)
+        return super().format_help().replace("usage:", tr("usage:"), 1)
 
     def error(self, message):
-        for en, ru in self.MESSAGES:
-            message = message.replace(en, ru)
+        for en in self.MESSAGES:
+            message = message.replace(en, tr(en))
+        if message.startswith("argument "):  # «argument --port: …»
+            message = tr("argument") + message[len("argument"):]
         self.print_usage(sys.stderr)
-        self.exit(2, f"{self.prog}: ошибка: {message}\n")
+        self.exit(2, tr("{prog}: error: {message}", prog=self.prog, message=message) + "\n")
 
 
 def main(argv=None):
-    parser = RuParser(
+    parser = Parser(
         prog="md2docx", add_help=False,
-        description="Конвертер Markdown → DOCX: заголовки, таблицы, книжная и альбомная ориентация.")
-    parser._positionals.title, parser._optionals.title = "аргументы", "параметры"
-    parser.add_argument("-h", "--help", action="help", help="показать эту справку и выйти")
+        description=tr("Markdown → DOCX converter: headings, tables, portrait and landscape pages."))
+    parser._positionals.title, parser._optionals.title = tr("positional arguments"), tr("options")
+    parser.add_argument("-h", "--help", action="help", help=tr("show this help message and exit"))
     parser.add_argument("inputs", nargs="+", metavar="INPUT.md",
-                        help="исходные файлы Markdown; с --fix-fonts — файлы docx")
+                        help=tr("source Markdown files; with --fix-fonts, docx files"))
     parser.add_argument("-o", dest="output", metavar="OUT.docx",
-                        help="файл результата (только при одном входном файле); по умолчанию — рядом с исходником")
-    parser.add_argument("--landscape", action="store_true", help="ориентация по умолчанию — альбомная")
+                        help=tr("output file (only with a single input file); by default, next to the source"))
+    parser.add_argument("--landscape", action="store_true", help=tr("make landscape the default orientation"))
     parser.add_argument("--no-auto-landscape", action="store_true",
-                        help="не переводить широкие таблицы в альбомную ориентацию")
+                        help=tr("do not move wide tables to landscape pages"))
     parser.add_argument("--force", action="store_true",
-                        help="перезаписать файл результата, даже если он правился после конвертации, "
-                             "создан не md2docx или открыт в Word")
+                        help=tr("overwrite the output file even if it was edited after conversion, was not "
+                                "created by md2docx or is open in Word"))
     parser.add_argument("--fix-fonts", action="store_true",
-                        help="не конвертировать, а вернуть в готовые docx подсказки шрифтов для "
-                             "Windows, которые стирает Word для Mac")
+                        help=tr("instead of converting, restore the Windows font hints that Word for Mac "
+                                "strips from finished docx files"))
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}",
-                        help="показать версию и выйти")
+                        help=tr("show the version and exit"))
     args = parser.parse_args(argv)
     if args.fix_fonts and (args.output is not None or args.landscape or args.no_auto_landscape):
-        parser.error("--fix-fonts нельзя сочетать с -o, --landscape и --no-auto-landscape")
+        parser.error(tr("--fix-fonts cannot be combined with -o, --landscape or --no-auto-landscape"))
     if args.fix_fonts:
         code = 0
         for src in args.inputs:
             try:
                 changed = fix_fonts(src, force=args.force)
             except FileExistsError as exc:  # открыт в Word: путь уже в тексте
-                print(f"Ошибка: {exc}", file=sys.stderr)
+                print(tr("Error: {message}", message=exc), file=sys.stderr)
                 code = 1
                 continue
             except (OSError, ValueError) as exc:
-                print(f"Ошибка: {src}: {describe_error(exc, src)}", file=sys.stderr)
+                print(tr("Error: {file}: {message}", file=src, message=describe_error(exc, src)), file=sys.stderr)
                 code = 1
                 continue
             except Exception as exc:  # непредвиденное — сообщить и перейти к следующему файлу пакета
-                print(f"Ошибка: {src}: внутренняя ошибка ({exc.__class__.__name__}: {exc})",
-                      file=sys.stderr)
+                print(tr("Error: {file}: {message}", file=src, message=internal_error(exc)), file=sys.stderr)
                 code = 1
                 continue
             if changed:
-                fixed = ", ".join(f"{name} ({', '.join(tags)})" for name, tags in changed.items())
-                print(f"Готово: {src} — восстановлены подсказки шрифтов: {fixed}")
+                print(tr("Done: {file} — {summary}", file=src, summary=fonts_summary(changed)))
             else:
-                print(f"Без изменений: {src} — подсказки шрифтов на месте")
+                print(tr("No changes: {file} — the font hints are already in place", file=src))
         return code
     if args.output and len(args.inputs) > 1:
-        parser.error("-o допустим только при одном входном файле")
+        parser.error(tr("-o is allowed only with a single input file"))
     if args.output == "":
-        parser.error("пустой путь в -o")
+        parser.error(tr("empty path in -o"))
 
     code = 0
     written = []  # (результат, вход) — уже записанные в этом запуске
@@ -1601,32 +1707,31 @@ def main(argv=None):
             # не with_suffix: на «.» и «/» он бросает ValueError раньше, чем чтение скажет «каталог»
             out_path = Path(args.output) if args.output else md_path.parent / (md_path.stem + ".docx")
             if out_path.exists() and out_path.samefile(md_path):  # -o на сам исходник
-                print(f"Ошибка: {src}: файл результата совпадает с исходным — исходник не тронут",
-                      file=sys.stderr)
+                print(tr("Error: {file}: {message}", file=src, message=tr(
+                    "the output file is the source itself — the source is left untouched")), file=sys.stderr)
                 code = 1
                 continue
             first = next((s for p, s in written if out_path.exists() and out_path.samefile(p)), None)
             if first is not None:  # notes.md и notes.markdown, один вход дважды: поздний затёр бы ранний
-                print(f"Ошибка: {src}: результат {out_path} совпадает с результатом {first} — пропущен",
-                      file=sys.stderr)
+                print(tr("Error: {file}: {message}", file=src, message=tr(
+                    "output {output} is the same as the output of {first} — skipped", output=out_path,
+                    first=first)), file=sys.stderr)
                 code = 1
                 continue
             stats = convert(md_path, out_path, landscape=args.landscape,
                             auto_landscape=not args.no_auto_landscape, force=args.force)
             written.append((out_path, src))
         except (OSError, UnicodeDecodeError) as exc:
-            print(f"Ошибка: {src}: {describe_error(exc, src)}", file=sys.stderr)
+            print(tr("Error: {file}: {message}", file=src, message=describe_error(exc, src)), file=sys.stderr)
             code = 1
             continue
         except Exception as exc:  # непредвиденное — сообщить и перейти к следующему файлу пакета
-            print(f"Ошибка: {src}: внутренняя ошибка ({exc.__class__.__name__}: {exc})", file=sys.stderr)
+            print(tr("Error: {file}: {message}", file=src, message=internal_error(exc)), file=sys.stderr)
             code = 1
             continue
         for warning in stats["warnings"]:
-            print(f"Внимание: {warning}", file=sys.stderr)
-        letters = ", ".join(stats["sections"])
-        print(f"Готово: {stats['output']} — разделов {len(stats['sections'])} ({letters}), "
-              f"таблиц {stats['tables']}, из них авто-альбомных {stats['auto_landscape_tables']}")
+            print(tr("Warning: {message}", message=warning), file=sys.stderr)
+        print(tr("Done: {file} — {summary}", file=stats["output"], summary=summary(stats)))
     return code
 
 

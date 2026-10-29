@@ -1,29 +1,29 @@
-# Автоальбомная ориентация
+# Automatic landscape orientation
 
-Вводный абзац на книжной странице. Ниже две широкие таблицы по девять колонок с длинными словами.
+An introductory paragraph on a portrait page. Below are two wide tables, nine columns each, with long words.
 
-## Сравнение направлений
+## Comparison by area
 
-Показатели по девяти направлениям:
+Metrics for nine areas:
 
-| Сегмент | Канал | Охват | Метрика | Доля | Тариф | Партнёр | Риск | Срок |
+| Segment | Channel | Reach | Metric | Share | Rate | Partner | Risk | Term |
 |---|---|---|---|---|---|---|---|---|
-| Аудитория | Конверсия | Удержание | Интеграция | Доходность | Абонентская | Партнёрство | Ликвидность | Окупаемость |
-| база | сайт | рост | число | треть | месяц | один | низкий | год |
+| Audience | Conversion | Retention | Integration | Profitability | Subscription | Partnership | Liquidity | Breakeven |
+| base | website | growth | count | third | month | one | low | year |
 
 ---
 
-## Продолжение сравнения
+## Comparison, continued
 
-| Этап | Канал | Охват | Метрика | Доля | Тариф | Партнёр | Риск | Срок |
+| Stage | Channel | Reach | Metric | Share | Rate | Partner | Risk | Term |
 |---|---|---|---|---|---|---|---|---|
-| Монетизация | Продвижение | Подключение | Возвратность | Тарификация | Аудитория | Конверсия | Удержание | Интеграция |
-| план | почта | город | доля | пятая | неделя | два | средний | квартал |
+| Monetization | Promotion | Onboarding | Reactivation | Invoicing | Audience | Conversion | Retention | Integration |
+| plan | email | city | share | fifth | week | two | medium | quarter |
 
-Абзац после широких таблиц возвращается на книжную страницу.
+The paragraph after the wide tables returns to a portrait page.
 
-| Узкая | Таблица |
+| Narrow | Table |
 |---|---|
-| остаётся | книжной |
+| stays | portrait |
 
-Финальный абзац документа.
+The final paragraph of the document.

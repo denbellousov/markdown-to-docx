@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import errno
+import functools
 import html
 import json
 import os
@@ -30,15 +31,16 @@ import time
 import webbrowser
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import parse_qs, quote, urlsplit
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # md2docx — из этого каталога, а не установленный где-то ещё
 try:
     import md2docx  # noqa: E402
-except ModuleNotFoundError as exc:  # pragma: no cover — на машине без зависимостей
-    sys.exit(f"Ошибка: не найден модуль {exc.name} — выполните: pip install -r requirements.txt")
+except ModuleNotFoundError as exc:  # pragma: no cover — на машине без зависимостей; tr() ещё нет
+    sys.exit(f"Error: module {exc.name} not found — run: pip install -r requirements.txt")
+from md2docx import tr  # noqa: E402
 
 PORT = 51536            # закреплён за проектом (парный 61536 не используется); другой — только --port
 HOST = "127.0.0.1"
@@ -49,11 +51,11 @@ MAX_JSON = 64 * 1024    # тело запроса конвертации
 CHUNK = MB
 MD_SUFFIXES = (".md", ".markdown")
 DOCX_SUFFIX = ".docx"   # готовый документ: вернуть подсказки шрифтов, как --fix-fonts
-GONE = "результаты устарели — выберите файлы заново"  # задание удалено: его заменило новое
+GONE = "the results are out of date — choose the files again"  # задание удалено: его заменило новое
 MODES = {  # переключатель на странице → параметры convert(), как флаги CLI
-    "auto": ("Авто", {}),
-    "landscape": ("Всё альбомное", {"landscape": True}),
-    "no-auto": ("Без автоальбомной", {"auto_landscape": False}),
+    "auto": ("Auto", {}),
+    "landscape": ("All landscape", {"landscape": True}),
+    "no-auto": ("No auto-landscape", {"auto_landscape": False}),
 }
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -65,7 +67,7 @@ def safe_rel(raw):
     if not raw or "\x00" in raw or "\\" in raw or raw.startswith("/"):
         return None
     parts = raw.split("/")
-    if any(part in ("", ".", "..") for part in parts):
+    if any(part in ("", ".", "..") or PureWindowsPath(part).drive for part in parts):  # D: — другой диск Windows
         return None
     return PurePosixPath(*parts)
 
@@ -92,19 +94,6 @@ def disposition(name):
     """Content-Disposition: запасное ASCII-имя и полное имя в UTF-8 (RFC 6266)."""
     fallback = re.sub(r"[^A-Za-z0-9._() -]", "_", name)
     return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
-
-
-def summary(stats):
-    """Та же строка итога, что печатает CLI после «Готово: …»."""
-    letters = ", ".join(stats["sections"])
-    return (f"разделов {len(stats['sections'])} ({letters}), таблиц {stats['tables']}, "
-            f"из них авто-альбомных {stats['auto_landscape_tables']}")
-
-
-def fonts_summary(changed):
-    """Та же строка, что печатает CLI с --fix-fonts после «Готово: …»."""
-    fixed = ", ".join(f"{name} ({', '.join(tags)})" for name, tags in changed.items())
-    return f"восстановлены подсказки шрифтов: {fixed}"
 
 
 def result_name(rel, taken):
@@ -145,34 +134,42 @@ class Job:
 
 
 def fix_copy(job, rel):
-    """Вернуть подсказки шрифтов в копию .docx задания → результат для списка.
+    """Вернуть подсказки шрифтов в копию .docx задания → (исправленное, ошибка, путь копии).
 
     Загруженный файл в src не меняется: исправляется его копия в fonts/. Если менять нечего
     или ошибка, копия удаляется — скачивать нечего."""
     src, dest = job.src.joinpath(*rel.parts), job.dir.joinpath("fonts", *rel.parts)
-    item = {"source": str(rel), "kind": "docx", "warnings": []}
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         changed = md2docx.fix_fonts(dest, force=True)  # force: эту копию в Word никто не открывал
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # текст ошибки — в fonts_item, на языке запроса
+        dest.unlink(missing_ok=True)
+        exc.__traceback__ = exc.__cause__ = exc.__context__ = None  # кадры держали бы распакованный docx
+        return None, exc, dest
+    if not changed:
+        dest.unlink(missing_ok=True)
+    return changed, None, dest
+
+
+def fonts_item(job, rel, changed, exc, dest):
+    """Итог fix_copy → результат для списка на языке текущего запроса."""
+    item = {"source": str(rel), "kind": "docx", "warnings": []}
+    if isinstance(exc, (OSError, ValueError)):
         item.update(ok=False, error=hide_paths(md2docx.describe_error(exc, dest), job))
-    except Exception as exc:  # непредвиденное — в ответ, как «внутренняя ошибка» в CLI
-        item.update(ok=False, error=hide_paths(
-            f"внутренняя ошибка ({exc.__class__.__name__}: {exc})", job))
+    elif exc:  # непредвиденное — в ответ, как «внутренняя ошибка» в CLI
+        item.update(ok=False, error=hide_paths(md2docx.internal_error(exc), job))
     else:
         item.update(ok=True, fixed=bool(changed))
         if changed:
-            item.update(summary=fonts_summary(changed), file=dest)
-    if "file" not in item:
-        dest.unlink(missing_ok=True)
+            item.update(summary=md2docx.fonts_summary(changed), file=dest)
     return item
 
 
 def run_job(job, sources, options):
     """Обработать файлы задания → (каталог прогона, результаты в порядке загрузки): .md —
     сконвертировать в новый каталог прогона, в .docx — исправить шрифты (один раз на задание:
-    ориентация их не касается, повторный прогон берёт готовый итог).
+    ориентация и язык их не касаются, повторный прогон берёт готовый итог).
 
     Как пакетный запуск CLI: ошибка в одном файле не останавливает остальные."""
     job.runs += 1
@@ -182,7 +179,7 @@ def run_job(job, sources, options):
         if rel.suffix.lower() == DOCX_SUFFIX:
             if rel not in job.fonts:
                 job.fonts[rel] = fix_copy(job, rel)
-            item = dict(job.fonts[rel])
+            item = fonts_item(job, rel, *job.fonts[rel])
             if "file" in item:  # имя занимает только то, что можно скачать
                 out_rel = result_name(rel, taken)
                 item.update(name=out_rel.name, zipname=str(out_rel))
@@ -197,10 +194,9 @@ def run_job(job, sources, options):
         except (OSError, UnicodeDecodeError) as exc:
             item.update(ok=False, error=hide_paths(md2docx.describe_error(exc, src), job))
         except Exception as exc:  # непредвиденное — в ответ, как «внутренняя ошибка» в CLI
-            item.update(ok=False, error=hide_paths(
-                f"внутренняя ошибка ({exc.__class__.__name__}: {exc})", job))
+            item.update(ok=False, error=hide_paths(md2docx.internal_error(exc), job))
         else:
-            item.update(ok=True, warnings=stats["warnings"], summary=summary(stats),
+            item.update(ok=True, warnings=stats["warnings"], summary=md2docx.summary(stats),
                         file=dest, zipname=str(out_rel))
         results.append(item)
     return run_dir, results
@@ -211,10 +207,11 @@ def run_job(job, sources, options):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=PORT, tmp_parent=None):
+    def __init__(self, port=PORT, tmp_parent=None, app=False):
         if port and port_taken(port):
             raise OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
         super().__init__((HOST, port), Handler)
+        self.app = app  # запущен приложением md2docx, а не из терминала: так и подсказывает страница
         self.port = self.server_address[1]
         self.hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
         self.token = secrets.token_urlsafe(32)
@@ -254,23 +251,25 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = do_PUT = do_GET
 
     def dispatch(self):
+        lang = self.headers.get("X-Lang", "")  # язык, выбранный на странице; иначе — системный
+        md2docx.LANG.set(lang if lang in md2docx.LANGUAGES else None)
         length = self.headers.get("Content-Length", "0")
         valid = re.fullmatch(r"[0-9]{1,15}", length) and "Transfer-Encoding" not in self.headers
         self.body_left = int(length) if valid else 0
         url = urlsplit(self.path)
         self.query = parse_qs(url.query, keep_blank_values=True)
         if self.headers.get("Host", "").lower() not in self.server.hosts:
-            return self.fail(403, "доступ только по адресу 127.0.0.1 или localhost")
+            return self.fail(403, tr("access only via 127.0.0.1 or localhost"))
         if not valid:
-            return self.fail(411, "нужен заголовок Content-Length")
+            return self.fail(411, tr("the Content-Length header is required"))
         if url.path == "/" and self.command == "GET":
             return self.page()
         parts = url.path.split("/")[1:]
         if parts[:1] != ["api"]:
-            return self.fail(404, "нет такой страницы")
+            return self.fail(404, tr("no such page"))
         token = self.headers.get("X-Token") or self.query.get("token", [""])[0]
         if not secrets.compare_digest(token.encode(), self.server.token.encode()):
-            return self.fail(403, "нет токена или он от прошлого запуска — обновите страницу")
+            return self.fail(403, tr("no token, or it is from a previous run — reload the page"))
         return self.route(parts[1:])
 
     def route(self, parts):
@@ -281,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.lock:
                 job = self.server.jobs.get(parts[1])
             if job is None:
-                return self.fail(404, GONE)
+                return self.fail(404, tr(GONE))
             action = parts[2:]
             if action == ["files"] and method == "PUT":
                 return self.upload(job)
@@ -292,7 +291,7 @@ class Handler(BaseHTTPRequestHandler):
             if (len(action) == 2 and action[0] == "docx" and method == "GET"
                     and re.fullmatch(r"[0-9]{1,9}", action[1])):
                 return self.download(job, int(action[1]))
-        return self.fail(404, "нет такого адреса")
+        return self.fail(404, tr("no such address"))
 
     # --- ответы
 
@@ -335,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             f = open(path, "rb")
         except FileNotFoundError:  # прогон успели заменить новым
-            return self.fail(404, "результат обновился — скачайте заново")
+            return self.fail(404, tr("the result has been updated — download it again"))
         with f:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
@@ -350,8 +349,10 @@ class Handler(BaseHTTPRequestHandler):
     def page(self):
         nonce = secrets.token_urlsafe(16)
         values = {"NONCE": nonce, "TOKEN": self.server.token, "VERSION": html.escape(md2docx.__version__),
-                  "MAX_FILE": str(self.server.max_file), "MAX_JOB": str(self.server.max_job)}
-        body = re.sub(r"__(NONCE|TOKEN|VERSION|MAX_FILE|MAX_JOB)__", lambda m: values[m[1]], PAGE)
+                  "MAX_FILE": str(self.server.max_file), "MAX_JOB": str(self.server.max_job),
+                  "I18N": page_catalogs(), "LANGS": script_json(list(md2docx.LANGUAGES.items())),
+                  "APP": script_json(self.server.app)}
+        body = re.sub(r"__(NONCE|TOKEN|VERSION|MAX_FILE|MAX_JOB|I18N|LANGS|APP)__", lambda m: values[m[1]], PAGE)
         csp =(f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; "
                "img-src data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; "
                "base-uri 'none'")
@@ -359,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def create_job(self):
         if self.body_left > MAX_JSON:
-            return self.fail(413, "слишком большой запрос")
+            return self.fail(413, tr("the request is too large"))
         self.discard()
         job_id = secrets.token_hex(8)
         # страница показывает только последнее задание: прежние удаляются с диска целиком;
@@ -381,22 +382,23 @@ class Handler(BaseHTTPRequestHandler):
     def upload(self, job):
         rel = safe_rel(self.query.get("path", [""])[0])
         if rel is None:
-            return self.fail(400, "недопустимый путь файла: нужен относительный, без «..», «\\» и NUL")
+            return self.fail(400, tr("invalid file path: it must be relative, without “..”, “\\” or NUL"))
         if "Content-Length" not in self.headers:
-            return self.fail(411, "нужен заголовок Content-Length")
+            return self.fail(411, tr("the Content-Length header is required"))
         size = self.body_left
         if size > self.server.max_file:
-            return self.fail(413, f"{rel}: файл больше {self.server.max_file // MB} МБ")
+            return self.fail(413, tr("{file}: the file is larger than {size} MB", file=rel,
+                                     size=self.server.max_file // MB))
         with self.server.lock:
             fits = job.size + size <= self.server.max_job
             if fits:
                 job.size += size
         if not fits:
-            return self.fail(413, f"вместе файлы больше {self.server.max_job // MB} МБ — "
-                                  "выберите меньше файлов")
+            return self.fail(413, tr("the files together exceed {size} MB — choose fewer files",
+                                     size=self.server.max_job // MB))
         dest = job.src.joinpath(*rel.parts)  # без «..» и «/» в начале — внутри каталога задания
         created = written = False
-        error = (500, f"{rel}: не удалось сохранить")
+        error = (500, tr("{file}: could not save", file=rel))
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             with open(dest, "xb") as out:  # «x»: занятое имя — отказ, а не перезапись
@@ -409,11 +411,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.body_left -= len(chunk)
             written = True
         except (FileExistsError, NotADirectoryError, IsADirectoryError):
-            error = (409, f"{rel}: файл с таким путём уже загружен")
+            error = (409, tr("{file}: a file with this path is already uploaded", file=rel))
         except (ConnectionError, TimeoutError):
-            error = (400, f"{rel}: файл передан не полностью")
+            error = (400, tr("{file}: the file was not transferred completely", file=rel))
         except OSError as exc:
-            error = (500, f"{rel}: не удалось сохранить ({exc.strerror or exc.__class__.__name__})")
+            error = (500, tr("{file}: could not save ({error})", file=rel,
+                             error=exc.strerror or exc.__class__.__name__))
         finally:
             if not written:
                 with self.server.lock:
@@ -428,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def convert(self, job):
         if self.body_left > MAX_JSON:
-            return self.fail(413, "слишком большой запрос")
+            return self.fail(413, tr("the request is too large"))
         raw = self.rfile.read(self.body_left) if self.body_left else b"{}"
         self.body_left = 0
         try:
@@ -437,11 +440,11 @@ class Handler(BaseHTTPRequestHandler):
             data = None
         mode = data.get("orientation", "auto") if isinstance(data, dict) else None
         if mode not in MODES:
-            return self.fail(400, "ориентация — auto, landscape или no-auto")
+            return self.fail(400, tr("orientation must be auto, landscape or no-auto"))
         with self.server.lock:
             sources = [rel for rel in job.files if rel.suffix.lower() in (*MD_SUFFIXES, DOCX_SUFFIX)]
         if not sources:
-            return self.fail(400, "среди загруженных файлов нет .md и .docx")
+            return self.fail(400, tr("there are no .md or .docx files among the uploaded ones"))
         with self.server.convert_lock:  # convert() не рассчитан на параллельные вызовы
             gone = not self.current(job)  # пока запрос ждал очереди, выбрали новые файлы
             if not gone:
@@ -451,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
                 if old:
                     shutil.rmtree(old, ignore_errors=True)
         if gone:
-            return self.fail(404, GONE)
+            return self.fail(404, tr(GONE))
         shown = []
         for n, item in enumerate(results):
             public = {k: v for k, v in item.items() if k not in ("file", "zipname")}
@@ -467,7 +470,7 @@ class Handler(BaseHTTPRequestHandler):
             results = job.results
         item = results[n] if n < len(results) else None
         if not item or "file" not in item:
-            return self.fail(404, "нет такого результата")
+            return self.fail(404, tr("no such result"))
         self.send_file(item["file"], DOCX, item["name"])
 
     def zip(self, job):
@@ -483,9 +486,9 @@ class Handler(BaseHTTPRequestHandler):
                         z.write(item["file"], item["zipname"])
                 tmp.replace(path)
         if gone:
-            return self.fail(404, GONE)
+            return self.fail(404, tr(GONE))
         if not done:
-            return self.fail(404, "нет готовых файлов")
+            return self.fail(404, tr("no finished files"))
         self.send_file(path, "application/zip", "md2docx.zip")
 
 
@@ -493,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def port_arg(value):
     if not re.fullmatch(r"[0-9]{1,5}", value) or not 0 < int(value) < 65536:
-        raise argparse.ArgumentTypeError("нужно число от 1 до 65535")
+        raise argparse.ArgumentTypeError(tr("a number from 1 to 65535 is required"))
     return int(value)
 
 
@@ -501,27 +504,27 @@ def _stop(signum, frame):
     raise SystemExit(0)
 
 
-def main(argv=None):
-    parser = md2docx.RuParser(prog="md2docx_web.py", add_help=False,
-                              description="Простой локальный интерфейс md2docx в браузере.")
-    parser._optionals.title = "параметры"
-    parser.add_argument("-h", "--help", action="help", help="показать эту справку и выйти")
+def main(argv=None, prog="md2docx_web.py"):
+    parser = md2docx.Parser(prog=prog, add_help=False,
+                            description=tr("Simple local md2docx interface in the browser."))
+    parser._optionals.title = tr("options")
+    parser.add_argument("-h", "--help", action="help", help=tr("show this help message and exit"))
     parser.add_argument("--port", type=port_arg, default=PORT, metavar="N",
-                        help=f"порт на 127.0.0.1 (по умолчанию {PORT})")
+                        help=tr("port on 127.0.0.1 (default {port})", port=PORT))
     parser.add_argument("--no-browser", action="store_true",
-                        help="не открывать браузер, только напечатать адрес")
+                        help=tr("do not open the browser, only print the address"))
     args = parser.parse_args(argv)
     try:
         server = Server(args.port)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
-            print(f"Ошибка: порт {args.port} занят. Если интерфейс уже запущен, он открыт по адресу "
-                  f"http://127.0.0.1:{args.port}/ — иначе посмотрите, кто занял порт: "
-                  f"lsof -nP -iTCP:{args.port} -sTCP:LISTEN, или запустите с другим: --port N",
-                  file=sys.stderr)
+            print(tr("Error: port {port} is busy. If the interface is already running, it is at "
+                     "http://127.0.0.1:{port}/ — otherwise check what holds the port: "
+                     "lsof -nP -iTCP:{port} -sTCP:LISTEN, or start with another one: --port N",
+                     port=args.port), file=sys.stderr)
         else:
-            print(f"Ошибка: не удалось открыть порт {args.port} "
-                  f"({exc.strerror or exc.__class__.__name__})", file=sys.stderr)
+            print(tr("Error: could not open port {port} ({error})", port=args.port,
+                     error=exc.strerror or exc.__class__.__name__), file=sys.stderr)
         return 1
     atexit.register(server.cleanup)
     signal.signal(signal.SIGINT, signal.default_int_handler)  # даже если запущен с игнорируемым SIGINT
@@ -530,8 +533,9 @@ def main(argv=None):
             signal.signal(getattr(signal, name), _stop)
     url = f"http://127.0.0.1:{server.port}/"
     try:
-        print(f"md2docx v{md2docx.__version__} — интерфейс в браузере: {url}", flush=True)
-        print("Остановить — Ctrl+C или закрыть это окно.", flush=True)
+        print(tr("md2docx v{version} — browser interface: {url}", version=md2docx.__version__, url=url),
+              flush=True)
+        print(tr("To stop: Ctrl+C or close this window."), flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         server.serve_forever()
@@ -541,7 +545,7 @@ def main(argv=None):
         server.server_close()
         server.cleanup()
     try:
-        print("\nОстановлено, временные файлы удалены.", flush=True)
+        print("\n" + tr("Stopped, temporary files deleted."), flush=True)
     except OSError:  # окно терминала уже закрыто
         pass
     return 0
@@ -551,13 +555,13 @@ def main(argv=None):
 # Всё, что ниже, уходит в браузер: в разметке, стилях и скрипте — без комментариев.
 
 PAGE = r"""<!doctype html>
-<html lang="ru" data-theme="dark">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0a0a0a">
-<title>md2docx — Markdown в DOCX</title>
+<title>md2docx — Markdown to DOCX</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2301a8a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6M8 13h8M8 17h5'/%3E%3C/svg%3E">
 <script nonce="__NONCE__">
 try {
@@ -581,6 +585,9 @@ h1{margin:0;font-size:20px;line-height:1.2;font-weight:700;letter-spacing:-.01em
 .icon{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .icon-btn{display:inline-grid;place-items:center;flex:none;width:40px;height:40px;padding:0;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);cursor:pointer}
 .icon-btn:hover{border-color:var(--border-strong)}
+.tools{display:flex;align-items:center;gap:8px;flex:none}
+.lang{height:40px;max-width:8.5em;padding:0 6px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);font:inherit;font-size:14px;cursor:pointer}
+.lang:hover{border-color:var(--border-strong)}
 :root[data-theme="light"] .i-sun,:root:not([data-theme="light"]) .i-moon{display:none}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .drop{padding:32px 16px;border:2px dashed var(--border-strong);border-radius:16px;background:var(--surface);text-align:center;transition:border-color .15s,background-color .15s}
@@ -607,7 +614,7 @@ h1{margin:0;font-size:20px;line-height:1.2;font-weight:700;letter-spacing:-.01em
 .seg input:checked+span{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent);font-weight:600}
 .seg input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
 .hint{margin:8px 0 0;color:var(--muted);font-size:14px}
-code{padding:0 4px;border:1px solid var(--border);border-radius:5px;background:var(--surface-2);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+code{padding:0 4px;border:1px solid var(--border);border-radius:5px;background:var(--surface-2);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;direction:ltr;unicode-bidi:isolate}
 .status{display:flex;align-items:flex-start;gap:8px;margin:24px 0 0;overflow-wrap:anywhere}
 .status:empty{display:none}
 .status .icon{margin-top:1px}
@@ -658,45 +665,48 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     <span class="logo"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg></span>
     <div>
       <h1>md2docx</h1>
-      <p class="sub">Markdown → DOCX на этом компьютере</p>
+      <p class="sub" data-i18n>Markdown → DOCX on this computer</p>
     </div>
   </div>
-  <button type="button" class="icon-btn" id="theme" aria-label="Включить светлую тему" title="Светлая тема">
-    <svg class="icon i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
-    <svg class="icon i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
-  </button>
+  <div class="tools">
+    <select class="lang" id="lang" aria-label="Language"></select>
+    <button type="button" class="icon-btn" id="theme" aria-label="Switch to light theme" title="Light theme">
+      <svg class="icon i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+      <svg class="icon i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+    </button>
+  </div>
 </header>
 <main>
   <section class="drop" id="drop" aria-labelledby="drop-title">
     <svg class="icon big" aria-hidden="true"><use href="#i-upload"/></svg>
-    <h2 id="drop-title">Перетащите .md или .docx сюда</h2>
-    <p><strong>.md</strong> — конвертация в DOCX: файлы или папку целиком, тогда найдутся картинки по относительным путям.</p>
-    <p><strong>.docx</strong> — исправить шрифты для Windows в файле, который пересохраняли в Word для Mac.</p>
-    <p>Из папки .docx не берутся — только отдельными файлами.</p>
-    <button type="button" class="btn btn-primary" id="pick">Выбрать файлы</button>
+    <h2 id="drop-title" data-i18n>Drop .md or .docx files here</h2>
+    <p><strong dir="ltr">.md</strong> — <span data-i18n>converted to DOCX: individual files or a whole folder, so that images with relative paths are found too.</span></p>
+    <p><strong dir="ltr">.docx</strong> — <span data-i18n>fonts fixed for Windows in a file that was re-saved in Word for Mac.</span></p>
+    <p data-i18n>Inside a folder, .docx files are skipped — add them as individual files.</p>
+    <button type="button" class="btn btn-primary" id="pick" data-i18n>Choose files</button>
     <input type="file" id="files" multiple accept=".md,.markdown,.docx,image/*" hidden>
   </section>
   <fieldset class="modes">
-    <legend>Ориентация</legend>
+    <legend data-i18n>Orientation</legend>
     <div class="seg">
-      <label><input type="radio" name="mode" value="auto" checked><span>Авто</span></label>
-      <label><input type="radio" name="mode" value="landscape"><span>Всё альбомное</span></label>
-      <label><input type="radio" name="mode" value="no-auto"><span>Без автоальбомной</span></label>
+      <label><input type="radio" name="mode" value="auto" checked><span data-i18n>Auto</span></label>
+      <label><input type="radio" name="mode" value="landscape"><span data-i18n>All landscape</span></label>
+      <label><input type="radio" name="mode" value="no-auto"><span data-i18n>No auto-landscape</span></label>
     </div>
-    <p class="hint" id="hint-auto">Широкие таблицы сами уходят на альбомные страницы, остальное — книжное.</p>
-    <p class="hint" id="hint-landscape" hidden>Весь документ альбомный, маркеры в тексте по-прежнему переключают ориентацию. Как <code>--landscape</code>.</p>
-    <p class="hint" id="hint-no-auto" hidden>Широкие таблицы остаются на книжных страницах. Как <code>--no-auto-landscape</code>.</p>
+    <p class="hint" id="hint-auto" data-i18n>Wide tables move to landscape pages on their own; everything else stays portrait.</p>
+    <p class="hint" id="hint-landscape" data-i18n hidden>The whole document is landscape; markers in the text still switch orientation. Same as <code>--landscape</code>.</p>
+    <p class="hint" id="hint-no-auto" data-i18n hidden>Wide tables stay on portrait pages. Same as <code>--no-auto-landscape</code>.</p>
   </fieldset>
   <div class="status" id="status" role="status" aria-live="polite"></div>
   <div class="actions" id="actions" hidden>
-    <a class="btn btn-primary" id="zip" href="#" download="md2docx.zip"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg><span>Скачать всё (.zip)</span></a>
+    <a class="btn btn-primary" id="zip" href="#" download="md2docx.zip"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg><span data-i18n>Download all (.zip)</span></a>
   </div>
-  <ul class="results" id="results" aria-label="Результаты"></ul>
-  <noscript><p>Для работы страницы нужен JavaScript.</p></noscript>
+  <ul class="results" id="results" aria-label="Results"></ul>
+  <noscript><p>This page needs JavaScript.</p></noscript>
 </main>
 <footer>
   <span>md2docx v__VERSION__</span>
-  <span>Работает только на этом компьютере. Остановить — Ctrl+C в окне терминала.</span>
+  <span id="where"></span>
 </footer>
 </div>
 <script nonce="__NONCE__">
@@ -709,15 +719,44 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
   const MD_RE = /\.(md|markdown)$/i;
   const DOCX_RE = /\.docx$/i;
   const IMG_RE = /\.(png|jpe?g|gif|bmp|tiff?|webp|svg|heic|emf|wmf)$/i;
-  const MODES = {"auto": "Авто", "landscape": "Всё альбомное", "no-auto": "Без автоальбомной"};
-  const OFFLINE = "сервер не отвечает — проверьте, что окно терминала с md2docx открыто";
+  const MODES = {"auto": "Auto", "landscape": "All landscape", "no-auto": "No auto-landscape"};
+  const I18N = __I18N__;
+  const LANGS = __LANGS__;
+  const APP = __APP__;
   const SVG = "http://www.w3.org/2000/svg";
   const $ = (id) => document.getElementById(id);
   const root = document.documentElement;
   const drop = $("drop"), input = $("files"), pick = $("pick"), statusEl = $("status");
   const list = $("results"), actions = $("actions"), zipLink = $("zip"), themeBtn = $("theme");
+  const langSel = $("lang");
   const radios = Array.from(document.querySelectorAll("input[name=mode]"));
-  let job = null, hasMd = false, zipUrl = null, busy = false, pending = false, depth = 0, note = "";
+  let job = null, hasMd = false, zipUrl = null, busy = false, pending = false, depth = 0, note = null;
+  let lang = "en";
+
+  function t(key, vals) {
+    const s = (I18N[lang] || {})[key] || key;
+    const wrap = root.dir === "rtl" ? (v) => "⁨" + v + "⁩" : String;
+    return vals ? s.replace(/\{(\w+)\}/g, (m, k) => (k in vals ? wrap(vals[k]) : m)) : s;
+  }
+
+  function preferred() {
+    let saved = null;
+    try { saved = localStorage.getItem("lang"); } catch (e) {}
+    for (const tag of [saved, ...(navigator.languages || []), navigator.language]) {
+      const code = String(tag || "").toLowerCase().split(/[-_]/)[0];
+      if (LANGS.some((l) => l[0] === code)) return code;
+    }
+    return "en";
+  }
+
+  function offline() {
+    return APP ? t("the server is not responding — check that the md2docx app is running")
+               : t("the server is not responding — check that the terminal window with md2docx is open");
+  }
+
+  function withNote(text) {
+    return note ? t("{status}. {note}", {status: text, note: note()}) : text;
+  }
 
   function icon(name, cls) {
     const s = document.createElementNS(SVG, "svg");
@@ -760,18 +799,18 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
   }
 
   async function request(method, url, body, type) {
-    const headers = {"X-Token": TOKEN};
+    const headers = {"X-Token": TOKEN, "X-Lang": lang};
     if (type) headers["Content-Type"] = type;
     let r;
     try {
       r = await fetch(url, {method, headers, body});
     } catch (e) {
-      throw new Error(OFFLINE);
+      throw new Error(offline());
     }
     if (r.ok) return r;
     let data = {};
     try { data = await r.json(); } catch (e) {}
-    const err = new Error(data.error || "ответ сервера " + r.status);
+    const err = new Error(data.error || t("server responded with {status}", {status: r.status}));
     err.status = r.status;
     throw err;
   }
@@ -794,7 +833,7 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     try {
       const r = await request("GET", url);
       let blob;
-      try { blob = await r.blob(); } catch (err) { throw new Error(OFFLINE); }
+      try { blob = await r.blob(); } catch (err) { throw new Error(offline()); }
       const link = el("a");
       link.href = URL.createObjectURL(blob);
       link.download = name;
@@ -803,7 +842,7 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 60000);
     } catch (err) {
-      setStatus("Не удалось скачать: " + err.message, "error");
+      setStatus(t("Could not download: {error}", {error: err.message}), "error");
       if (err.status === 404) stale();
     } finally {
       a.removeAttribute("aria-disabled");
@@ -872,17 +911,18 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
 
   async function start(picked) {
     let files = unique(picked.filter((f) => keep(f.path)));
-    files.sort((a, b) => a.path.localeCompare(b.path, "ru", {numeric: true}));
+    files.sort((a, b) => a.path.localeCompare(b.path, lang, {numeric: true}));
     const big = files.filter((f) => f.file.size > MAX_FILE);
     files = files.filter((f) => f.file.size <= MAX_FILE);
-    note = big.length ? ". Пропущено файлов больше " + MAX_FILE / MB + " МБ: " + big.length + " (" + big.map((f) => f.path).join(", ") + ")" : "";
+    note = big.length ? () => t("Skipped files larger than {size} MB: {count} ({files})",
+      {size: MAX_FILE / MB, count: big.length, files: big.map((f) => f.path).join(", ")}) : null;
     if (!files.some((f) => MD_RE.test(f.path) || DOCX_RE.test(f.path))) {
-      setStatus("Среди выбранных нет файлов .md или .docx (.docx из папки не берутся)" + note, "error");
+      setStatus(withNote(t("No .md or .docx files among the selected ones (.docx files inside folders are skipped)")), "error");
       return;
     }
     const total = files.reduce((sum, f) => sum + f.file.size, 0);
     if (total > MAX_JOB) {
-      setStatus("Вместе файлы больше " + MAX_JOB / MB + " МБ — выберите меньше файлов или папку поменьше", "error");
+      setStatus(t("The files together exceed {size} MB — choose fewer files or a smaller folder", {size: MAX_JOB / MB}), "error");
       return;
     }
     job = null;
@@ -893,12 +933,12 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     try {
       const created = await api("POST", "/api/jobs");
       for (let i = 0; i < files.length; i++) {
-        setStatus("Загружаю " + (i + 1) + " из " + files.length + ": " + files[i].path, "busy");
+        setStatus(t("Uploading {n} of {total}: {file}", {n: i + 1, total: files.length, file: files[i].path}), "busy");
         await api("PUT", "/api/jobs/" + created.job + "/files?path=" + encodeURIComponent(files[i].path), files[i].file);
       }
       job = created.job;
     } catch (e) {
-      setStatus("Не удалось загрузить: " + e.message, "error");
+      setStatus(t("Could not upload: {error}", {error: e.message}), "error");
       return;
     } finally {
       setBusy(false);
@@ -916,12 +956,13 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     const m = mode();
     let gone = false;
     setBusy(true);
-    setStatus(hasMd ? "Конвертирую (" + MODES[m] + ")…" : "Исправляю шрифты…", "busy");
+    setStatus(hasMd ? t("Converting ({mode})…", {mode: t(MODES[m])}) : t("Fixing fonts…"), "busy");
     try {
       const data = await api("POST", "/api/jobs/" + job + "/convert", JSON.stringify({orientation: m}), "application/json");
       render(data, m);
     } catch (e) {
-      setStatus((hasMd ? "Не удалось сконвертировать: " : "Не удалось исправить шрифты: ") + e.message, "error");
+      setStatus(hasMd ? t("Could not convert: {error}", {error: e.message})
+                      : t("Could not fix fonts: {error}", {error: e.message}), "error");
       gone = e.status === 404;
     } finally {
       setBusy(false);
@@ -936,10 +977,12 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
   function item(r) {
     const li = el("li", "item");
     const main = el("div", "main");
-    main.append(el("div", "name", r.source));
+    const source = el("div", "name", r.source);
+    source.dir = "auto";
+    main.append(source);
     const line = el("div", "line");
     const fonts = r.kind === "docx";
-    const label = !r.ok ? "ошибка" : !fonts ? "готово" : r.fixed ? "шрифты исправлены" : "исправлять нечего — подсказки на месте";
+    const label = !r.ok ? t("error") : !fonts ? t("done") : r.fixed ? t("fonts fixed") : t("nothing to fix — the hints are in place");
     const badge = el("span", "badge " + (!r.ok ? "err" : fonts && !r.fixed ? "same" : "ok"));
     badge.append(icon(r.ok ? "i-ok" : "i-err"), el("span", null, label));
     line.append(badge);
@@ -948,12 +991,14 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     if (!r.ok) main.append(el("p", "error-text", r.error));
     if (r.url) {
       const out = el("div", "out");
-      out.append(icon("i-file"), el("span", null, r.name));
+      const name = el("span", null, r.name);
+      name.dir = "auto";
+      out.append(icon("i-file"), name);
       main.append(out);
     }
     if (r.warnings.length) {
       const warns = el("ul", "warns");
-      warns.setAttribute("aria-label", "Предупреждения");
+      warns.setAttribute("aria-label", t("Warnings"));
       for (const w of r.warnings) {
         const wl = el("li");
         wl.append(icon("i-warn"), el("span", null, w));
@@ -966,8 +1011,8 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
       const a = el("a", "btn btn-ghost");
       a.href = r.url + "?token=" + encodeURIComponent(TOKEN);
       a.download = r.name;
-      a.setAttribute("aria-label", "Скачать " + r.name);
-      a.append(icon("i-download"), el("span", null, "Скачать .docx"));
+      a.setAttribute("aria-label", t("Download {file}", {file: r.name}));
+      a.append(icon("i-download"), el("span", null, t("Download .docx")));
       a.addEventListener("click", (e) => save(e, r.url, r.name));
       li.append(a);
     }
@@ -981,7 +1026,9 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     zipUrl = data.zip;
     actions.hidden = !zipUrl;
     if (zipUrl) zipLink.href = zipUrl + "?token=" + encodeURIComponent(TOKEN);
-    setStatus((hasMd ? MODES[m] + ": готово " : "Готово ") + ok + " из " + data.results.length + (failed ? ", с ошибкой " + failed : "") + note);
+    const vals = {mode: t(MODES[m]), ok, total: data.results.length, failed};
+    setStatus(withNote(hasMd ? (failed ? t("{mode}: done {ok} of {total}, failed {failed}", vals) : t("{mode}: done {ok} of {total}", vals))
+                             : (failed ? t("Done {ok} of {total}, failed {failed}", vals) : t("Done {ok} of {total}", vals))));
   }
 
   function isFileDrag(e) {
@@ -1011,13 +1058,13 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     drop.classList.remove("over");
     if (busy) return;
     setBusy(true);
-    setStatus("Читаю выбранное…", "busy");
+    setStatus(t("Reading the dropped items…"), "busy");
     fromDrop(e.dataTransfer).then((files) => {
       setBusy(false);
       return start(files);
     }, (err) => {
       setBusy(false);
-      setStatus("Не удалось прочитать перетащенное: " + (err && err.message ? err.message : err), "error");
+      setStatus(t("Could not read the dropped items: {error}", {error: err && err.message ? err.message : err}), "error");
     });
   });
 
@@ -1039,8 +1086,8 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
 
   function paintTheme() {
     const light = root.dataset.theme === "light";
-    themeBtn.setAttribute("aria-label", light ? "Включить тёмную тему" : "Включить светлую тему");
-    themeBtn.title = light ? "Тёмная тема" : "Светлая тема";
+    themeBtn.setAttribute("aria-label", light ? t("Switch to dark theme") : t("Switch to light theme"));
+    themeBtn.title = light ? t("Dark theme") : t("Light theme");
     document.querySelector("meta[name=theme-color]").content = light ? "#fafaf7" : "#0a0a0a";
   }
   themeBtn.addEventListener("click", () => {
@@ -1048,13 +1095,75 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
     paintTheme();
   });
-  paintTheme();
+
+  const texts = Array.from(document.querySelectorAll("[data-i18n]"), (e) => {
+    const kids = [];
+    let key = "";
+    for (const n of e.childNodes) {
+      if (n.nodeType === Node.TEXT_NODE) key += n.data;
+      else key += "{" + (kids.push(n) - 1) + "}";
+    }
+    return {e, key, kids};
+  });
+
+  function translate() {
+    root.lang = lang;
+    root.dir = lang === "ar" ? "rtl" : "ltr";
+    document.title = t("md2docx — Markdown to DOCX");
+    for (const {e, key, kids} of texts) {
+      e.replaceChildren(...t(key).split(/\{(\d+)\}/).map((part, i) => (i % 2 ? kids[part] : part)));
+    }
+    langSel.setAttribute("aria-label", t("Language"));
+    list.setAttribute("aria-label", t("Results"));
+    $("where").textContent = APP ? t("Runs only on this computer. To stop it, quit the md2docx app.")
+                                 : t("Runs only on this computer. To stop it, press Ctrl+C in the terminal window.");
+    paintTheme();
+  }
+
+  for (const [code, name] of LANGS) {
+    const o = new Option(name, code);
+    o.lang = code;
+    langSel.append(o);
+  }
+  lang = langSel.value = preferred();
+  langSel.addEventListener("change", () => {
+    lang = langSel.value;
+    try { localStorage.setItem("lang", lang); } catch (e) {}
+    translate();
+    if (job) convert();
+  });
+  translate();
   showHint();
 })();
 </script>
 </body>
 </html>
 """
+
+
+def i18n_key(inner):
+    """Текст элемента с data-i18n → ключ перевода, как его собирает скрипт страницы:
+    вложенные элементы заменяются на {0}, {1}…"""
+    parts = re.split(r"<(\w+)[^>]*>.*?</\1>", inner, flags=re.S)
+    return "".join(f"{{{i // 2}}}" if i % 2 else part for i, part in enumerate(parts))
+
+
+# строки страницы, которым нужен перевод: тексты элементов с data-i18n и литералы t("…") в скрипте
+PAGE_KEYS = frozenset(
+    [i18n_key(m[2]) for m in re.finditer(r"<(\w+)[^>]*\bdata-i18n\b[^>]*>(.*?)</\1>", PAGE, re.S)]
+    + [json.loads(f'"{s}"') for s in re.findall(r'\bt\("((?:[^"\\]|\\.)*)"', PAGE)])
+
+
+def script_json(obj):
+    """JSON для вставки в <script>: «<» экранирован, чтобы «</script>» в строке не закрыл тег."""
+    return json.dumps(obj, ensure_ascii=False).replace("<", "\\u003c")
+
+
+@functools.cache
+def page_catalogs():
+    """Переводы строк страницы на все языки, кроме английского: {язык: {строка: перевод}}."""
+    return script_json({lang: {k: v for k, v in md2docx.catalog(lang).items() if k in PAGE_KEYS}
+                        for lang in md2docx.LANGUAGES if lang != "en"})
 
 
 if __name__ == "__main__":

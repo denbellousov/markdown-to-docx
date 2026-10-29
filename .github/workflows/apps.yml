@@ -1,0 +1,135 @@
+# Приложения md2docx для macOS (Apple Silicon и Intel) и Windows: сборка PyInstaller по
+# packaging/md2docx.spec, дымовой тест собранного приложения (packaging/smoke.py), файлы —
+# в артефакты прогона, а при публикации релиза — в его файлы под постоянными именами.
+name: Apps
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-26
+            asset: md2docx-macos-arm64.zip
+          - name: macos-intel
+            os: macos-26-intel
+            asset: md2docx-macos-intel.zip
+          - name: windows-x64
+            os: windows-2025
+            asset: md2docx-windows-x64.exe
+    env:
+      ASSET: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller==6.22.3
+
+      - name: Build
+        run: pyinstaller --noconfirm packaging/md2docx.spec
+
+      # Два запуска: с аргументами (режим md2docx_web.py, без окна) и без них — окно Tk,
+      # сервер в потоке, браузер. Второй проверяет, что Tk стартует в собранном приложении:
+      # если окно не создалось, приложение останавливает сервер и тест падает.
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          smoke() {  # $1 — порт, дальше — аргументы приложения
+            local port=$1 status=0
+            shift
+            dist/md2docx.app/Contents/MacOS/md2docx "$@" &
+            local pid=$!
+            python packaging/smoke.py "http://127.0.0.1:$port/" || status=$?
+            kill "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return "$status"
+          }
+          smoke 61536 --no-browser --port 61536
+          smoke 51536
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Invoke-Smoke([int] $Port, [string[]] $AppArgs) {
+            $start = @{ FilePath = 'dist\md2docx.exe'; PassThru = $true }
+            if ($AppArgs) {
+              # вывод — в файлы, чтобы при провале было что читать; без аргументов потоков
+              # вывода нет, как при двойном щелчке (sys.stdout is None)
+              $start += @{ ArgumentList = $AppArgs
+                           RedirectStandardOutput = 'app-out.log'; RedirectStandardError = 'app-err.log' }
+            }
+            $app = Start-Process @start
+            try {
+              python packaging/smoke.py "http://127.0.0.1:$Port/"
+              $code = $LASTEXITCODE
+            } finally {
+              # onefile — два процесса: загрузчик и Python; /T завершает оба
+              taskkill /PID $app.Id /T /F *> $null
+            }
+            if ($code -ne 0) {
+              if ($AppArgs) { Get-Content app-out.log, app-err.log -ErrorAction SilentlyContinue }
+              throw "smoke test failed on port $Port"
+            }
+          }
+          Invoke-Smoke 61536 @('--no-browser', '--port', '61536')
+          Invoke-Smoke 51536
+          exit 0  # код taskkill — не итог шага
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          plutil -p dist/md2docx.app/Contents/Info.plist
+          ditto -c -k --keepParent dist/md2docx.app "$ASSET"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item dist/md2docx.exe $env:ASSET
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: md2docx-${{ matrix.name }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Attach to release
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"

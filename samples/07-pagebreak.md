@@ -1,30 +1,30 @@
 <!-- pagebreak -->
 
-# Разрывы страниц
+# Page breaks
 
-Первая страница: маркер разрыва в самом начале документа игнорируется.
+First page: a page break marker at the very beginning of the document is ignored.
 
 <!-- pagebreak -->
 
-Вторая страница после комментария-маркера.
+Second page, after the marker comment.
 
 \newpage
 
-Третья страница после команды в стиле LaTeX.
+Third page, after a LaTeX-style command.
 
 \pagebreak
 
-Четвёртая страница после второй команды.
+Fourth page, after the second command.
 
 <!-- pagebreak -->
 <!-- PAGEBREAK -->
 
-Пятая страница: два маркера подряд дают один разрыв.
+Fifth page: two markers in a row produce a single break.
 
 <!-- pagebreak -->
 
 <!-- landscape -->
 
-Шестая страница альбомная: из двух маркеров подряд действует последний.
+Sixth page, landscape: of two markers in a row, the last one applies.
 
 \newpage

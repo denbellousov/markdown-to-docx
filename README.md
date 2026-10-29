@@ -11,7 +11,8 @@ a `.md` file into a Word document with Word's built-in heading styles, full-widt
 column widths are measured from the actual text, and mixed portrait and landscape pages:
 a table too wide for a portrait page moves to a landscape page by itself, together with its
 heading. md2docx is one Python file that needs no pandoc, no LibreOffice and no network,
-plus an optional browser interface that runs on `127.0.0.1`.
+plus an optional browser interface that runs on `127.0.0.1`, also as a ready-made app for
+macOS and Windows.
 
 ![A portrait page with headings, a table and lists, and a landscape page with a wide eight-column table, both produced by md2docx from samples/08-showcase.md](docs/images/pages.png)
 
@@ -37,8 +38,34 @@ plus an optional browser interface that runs on `127.0.0.1`.
   indented code blocks, nested quotes, nested lists with real Word numbering, hyperlinks, local
   images, horizontal rules, hard line breaks and `<br>`. YAML front matter and HTML comments are
   skipped; other HTML tags are removed and their text is kept, with a warning for HTML blocks.
-- **Browser interface:** drop `.md` files or a whole folder, pick the orientation mode,
-  download the `.docx` files one by one or as a `.zip`.
+- **App and browser interface:** drop `.md` files or a whole folder, pick the orientation
+  mode, download the `.docx` files one by one or as a `.zip`. The app for macOS and Windows
+  needs no Python.
+- **Ten languages:** English, Chinese, Hindi, Spanish, French, Arabic, Portuguese, Russian,
+  German and Japanese, picked from the system or the browser.
+
+## Download the app
+
+No Python needed: download the app for your system from the
+[latest release](https://github.com/denbellousov/markdown-to-docx/releases/latest).
+
+| System | File |
+|---|---|
+| macOS, Apple silicon (M1 and later) | [md2docx-macos-arm64.zip](https://github.com/denbellousov/markdown-to-docx/releases/latest/download/md2docx-macos-arm64.zip) |
+| macOS, Intel | [md2docx-macos-intel.zip](https://github.com/denbellousov/markdown-to-docx/releases/latest/download/md2docx-macos-intel.zip) |
+| Windows, 64-bit | [md2docx-windows-x64.exe](https://github.com/denbellousov/markdown-to-docx/releases/latest/download/md2docx-windows-x64.exe) |
+
+The app opens the [browser interface](#browser-interface) and shows a small window with its
+address. Quitting the app or closing that window stops md2docx and deletes its temporary
+files; opening the app again while it runs brings the page back.
+
+The apps are not signed, so the system asks once before the first start:
+
+- **macOS:** unzip, move md2docx to Applications and open it. When macOS says it cannot verify
+  the app, open System Settings › Privacy & Security, click "Open Anyway" next to the message
+  about md2docx and confirm.
+- **Windows:** if SmartScreen says "Windows protected your PC", click "More info", then
+  "Run anyway".
 
 ## Quick start
 
@@ -58,8 +85,8 @@ md2docx is developed and tested on macOS with Python 3.13 (Word for Mac 16.114, 
 widths are measured with Helvetica Neue and Arial from the macOS font folders or with Arial
 from `C:\Windows\Fonts`; without these fonts they are estimated. With the Mac fonts hidden
 (Arial only, and no fonts at all) every sample converts to the same page orientations and
-passes the checker; md2docx has not been run on Windows or Linux itself. Command-line messages
-and the browser interface are in Russian.
+passes the checker; the converter's output has not been checked on Windows or Linux itself.
+Messages follow the system language, see [Languages](#languages).
 
 ## Usage
 
@@ -84,20 +111,20 @@ python3 md2docx.py --version
 | `--version` | print the version |
 
 For every file md2docx prints one summary line, for example
-`Готово: report.docx — разделов 3 (К, А, К), таблиц 5, из них авто-альбомных 2`: done, three
+`Done: report.docx — sections: 3 (P, L, P), tables: 5, auto-landscape: 2`: three
 sections (portrait, landscape, portrait), five tables, two of them moved to landscape
 automatically. Warnings (a missing image, a link with an unsupported scheme, an HTML block,
 a table that does not fit its page without breaking words) go to stderr with the prefix
-`Внимание:`.
+`Warning:`. Messages are in the interface language (see [Languages](#languages)); the
+examples here are in English.
 Exit codes: 0 — success; 1 — a file could not be read or written, including `-o` pointing
 at the source (the source is not touched) and a result that must not be overwritten (see
 [Overwrite protection](#overwrite-protection)); 2 — invalid arguments, including an empty
 `-o`. An error in one file does not stop the rest of the batch.
 
 Input must be UTF-8 (with or without BOM) or UTF-16 with BOM. Any other encoding is an error
-(`файл не в кодировке UTF-8`, the file is not in UTF-8); null bytes without a BOM are reported
-as `похоже на UTF-16 без BOM или двоичный файл — сохраните в UTF-8` (looks like UTF-16 without
-BOM or a binary file — save it as UTF-8).
+(`the file is not UTF-8 encoded`); null bytes without a BOM are reported as `looks like UTF-16
+without BOM or a binary file — save it as UTF-8`.
 
 ### Python API
 
@@ -109,9 +136,9 @@ restored = fix_fonts("report.docx", force=False)
 ```
 
 `convert()` returns a dict: `output` (the result path), `sections` (the section orientations
-as letters, `К` for portrait and `А` for landscape, e.g. `['К', 'А', 'К']`), `tables`,
-`auto_landscape_tables` and `warnings` (a list of warning lines, without the `Внимание:`
-prefix). If the result must not be overwritten, it raises `FileExistsError` with the same
+as letters, `К` for portrait and `А` for landscape, e.g. `['К', 'А', 'К']`; these Cyrillic
+letters do not depend on the interface language), `tables`, `auto_landscape_tables` and
+`warnings` (a list of warning lines in the interface language, without the `Warning:` prefix). If the result must not be overwritten, it raises `FileExistsError` with the same
 message as the CLI; `force=True` works like `--force`. It raises `OSError` (for example
 `FileNotFoundError`) if a file cannot be read or written, and `UnicodeDecodeError` for an
 unsupported encoding.
@@ -211,7 +238,7 @@ explicitly marked as landscape are never touched.
 - Images: local files are embedded, no wider than the text (or the cell) and no taller than
   0.8 of the text area height, keeping their proportions. A remote (URL), missing or
   unreadable image (for example SVG) and a file over 50 MB are not embedded: a placeholder
-  `[изображение: …]` and a warning appear instead. An image outside the document's folder is
+  `[image: …]` (in the interface language) and a warning appear instead. An image outside the document's folder is
   embedded with a warning.
 - Characters that Helvetica Neue lacks but Arial has (for example `→`) are set in Arial, so
   that Word for Mac does not draw them in Times New Roman. This needs Pillow and the macOS
@@ -270,8 +297,8 @@ Mac 16.114). Without these hints Word on Windows may substitute a serif font. `-
   Mac again removes the hints again;
 - a file open in Word (with a `~$…` lock file next to it) whose hints need restoring is not
   changed without `--force`: exit code 1, close the document and run again;
-- the summary is `Готово: report.docx — восстановлены подсказки шрифтов: Helvetica Neue
-  (altName, family), Menlo (altName)`; if the hints are in place, it is `Без изменений: …`
+- the summary is `Done: report.docx — font hints restored: Helvetica Neue (altName, family),
+  Menlo (altName)`; if the hints are in place, it is `No changes: …`
   and the file is not rewritten. Not a docx, a broken archive or no font table is an error
   for that file (exit code 1), and the other files are still fixed; the mode cannot be
   combined with `-o`, `--landscape` or `--no-auto-landscape` (exit code 2).
@@ -299,25 +326,41 @@ A result that is open in Word is not replaced, even if it is untouched. Word put
 `~$…` next to an open file: for a name of up to 6 characters (without the extension) the lock
 is `~$` plus the whole name (`report.docx` → `~$report.docx`), for 7 characters the first one
 is dropped, for 8 or more the first two (`report-2026.docx` → `~$port-2026.docx`). If such
-a lock exists, md2docx refuses with exit code 1 and the message `файл открыт в Word` (the file
-is open in Word); `--force` overwrites in this case too. If Word is closed but the lock is still
+a lock exists, md2docx refuses with exit code 1 and the message `the file is open in Word`;
+`--force` overwrites in this case too. If Word is closed but the lock is still
 there, delete the `~$…` file or use `--force`. Different files can share a lock name: an open
 `cdefgh.docx` also blocks `abcdefgh.docx` (the lock of both is `~$cdefgh.docx`); `--force`
 lifts it.
 
 Writing is atomic: first a temporary file in the same folder, then a replace. If writing fails,
 the previous result stays intact. A read-only result is not replaced even with `--force`
-(error `нет доступа`, access denied). A symlinked result stays a symlink: the file it points to
+(error `permission denied`). A symlinked result stays a symlink: the file it points to
 is replaced. The permissions of the previous result are kept; hard links are not, since after
 the replacement it is a new file. md2docx needs write permission for the output folder. Two
 inputs of one run with the same output (`report.md` and `report.markdown` in one folder) are an
 error for the later one, and the earlier result stays.
 
+## Languages
+
+The command line, the browser page and the app speak English, Chinese (Simplified), Hindi,
+Spanish, French, Arabic, Portuguese (Brazil), Russian, German and Japanese. The language is
+picked automatically: `MD2DOCX_LANG` if it is set, otherwise `LANGUAGE`, `LC_ALL`,
+`LC_MESSAGES` or `LANG`, otherwise the language of the operating system; any other language
+falls back to English. The page follows the browser's languages and has a switch in its
+header. Only messages and the `[image: …]` placeholder are translated, never your text.
+
+```sh
+MD2DOCX_LANG=de python3 md2docx.py report.md   # messages in German
+```
+
+Translations live in `locales/<language>.json`, keyed by the English text.
+
 ## Browser interface
 
 ![The md2docx browser interface after converting three sample files: the orientation switch, the result of each file and the download buttons](docs/images/web-ui.png)
 
-To convert files without the command line:
+The [app](#download-the-app) opens this page by itself. Without the app, start it from the
+command line:
 
 ```sh
 python3 md2docx_web.py               # http://127.0.0.1:51536/ — opens the browser
@@ -329,32 +372,36 @@ On macOS you can also double-click `md2docx-web.command` in Finder: a Terminal w
 server opens. Stop the server with Ctrl+C in that window or by closing it.
 
 Drop `.md` files or a whole folder onto the page (from a folder md2docx takes `.md`,
-`.markdown` and images and skips hidden files and folders) or click «Выбрать файлы» (choose
-files); the conversion starts right away. The orientation switch matches the CLI flags:
-«Авто» (auto) — no flags, «Всё альбомное» (all landscape) — `--landscape`, «Без
-автоальбомной» (no automatic landscape) — `--no-auto-landscape`; switching it re-converts the
-same files. Each file shows «готово» (done) with the same summary line as the CLI, or «ошибка»
-(error) with the message. A converted file also lists the converter's warnings verbatim and has
-a «Скачать .docx» (download) button; when two or more files can be downloaded, «Скачать всё
-(.zip)» appears as well. The result is the same as `md2docx.py` with the same flags.
+`.markdown` and images and skips hidden files and folders) or click "Choose files"; the
+conversion starts right away. The orientation switch matches the CLI flags: "Auto" — no flags,
+"All landscape" — `--landscape`, "No auto-landscape" — `--no-auto-landscape`; switching it
+re-converts the same files. Each file shows "done" with the same summary line as the CLI, or
+"error" with the message. A converted file also lists the converter's warnings verbatim and has
+a "Download .docx" button; when two or more files can be downloaded, "Download all (.zip)"
+appears as well. The result is the same as `md2docx.py` with the same flags. The page speaks
+the browser's language; the language switch in its header changes it, remembers the choice in
+this browser and re-converts the files, so the messages and image placeholders follow it.
 
 A `.docx` dropped on the same page gets its fonts fixed for Windows, as with `--fix-fonts`.
 It has to be a separate file: `.docx` files inside a dropped folder are skipped, since those
 are usually earlier results. A copy is fixed; the original is not changed. Each `.docx` then
-shows «шрифты исправлены» (fonts fixed) with what was restored, in the CLI's words, and
-«Скачать .docx»; or «исправлять нечего — подсказки на месте» (nothing to fix, the hints are in
-place), with nothing to download; or «ошибка» with the message. The orientation switch does not
+shows "fonts fixed" with what was restored, in the CLI's words, and "Download .docx"; or
+"nothing to fix — the hints are in place", with nothing to download; or "error" with the
+message. The orientation switch does not
 apply to `.docx` files.
 
 - The server listens on 127.0.0.1 only and answers only to `127.0.0.1` or `localhost`;
   API requests need a token that is generated at each server start and embedded in the page;
   after restarting the server, reload the page.
 - The default port 51536 is fixed for the project; its pair 61536 is reserved too and stays
-  unused, since there is no separate backend. If 51536 is busy, the server says so and exits;
-  it never picks another port by itself.
+  unused, since there is no separate backend. If 51536 is busy, `md2docx_web.py` says so and
+  exits; it never picks another port by itself. The app instead opens the md2docx that is
+  already running there, and if another program holds the port, it takes a free one and shows
+  the address in its window.
 - Source files are not changed: the browser sends copies, which live in the server's
   temporary folder. Only the last job is kept: a new selection deletes the copies and results
-  of the previous one, and stopping the server (Ctrl+C, closing the window, `kill`) deletes
+  of the previous one, and stopping the server (quitting the app, Ctrl+C, closing the
+  Terminal window, `kill`) deletes
   everything. If the page is open in two tabs, a new selection in one makes the results in the
   other stale; that tab says so as soon as you use it (download or switch the orientation).
 - Images are resolved relative to the `.md` file inside what you dropped: a path above the
@@ -414,7 +461,20 @@ python3 tests/verify.py report.md report.docx     # check one document against i
 
 `--basetemp` keeps the temporary files of the tests in one known folder; use a dedicated one,
 because pytest empties it at the start of a run. `-p no:cacheprovider` keeps `.pytest_cache`
-out of the project.
+out of the project. The tests expect Russian messages whatever your system language is
+(`tests/conftest.py` sets `MD2DOCX_LANG=ru`); `tests/test_i18n.py` checks that every
+translation has exactly the strings and placeholders of the code, and the English output.
+
+The apps are built with PyInstaller, on the system they are for:
+
+```sh
+pip install pyinstaller
+pyinstaller --noconfirm packaging/md2docx.spec   # → dist/md2docx.app or dist/md2docx.exe
+python3 packaging/smoke.py                       # with the app running: convert a sample through it
+```
+
+GitHub Actions (`.github/workflows/apps.yml`) builds them for macOS (Apple silicon and Intel)
+and Windows, runs the smoke test against each build and attaches them to every release.
 
 `tests/verify.py` is an independent md ↔ docx checker: words, headings, tables, leftover markup
 and the formatting invariants from [SPEC.md](SPEC.md). Check a document built with

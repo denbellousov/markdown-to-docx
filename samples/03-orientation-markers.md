@@ -1,35 +1,35 @@
 <!-- portrait -->
 
-# Маркеры ориентации
+# Orientation markers
 
-Первая страница книжная. Маркер в самом начале совпадает с ориентацией по умолчанию и не создаёт ни пустого раздела, ни пустой страницы.
+The first page is portrait. A marker at the very beginning matches the default orientation and creates neither an empty section nor a blank page.
 
 <!-- landscape -->
 
-## Альбомный участок
+## Landscape section
 
-| Показатель | Значение |
+| Parameter | Value |
 |---|---|
-| ширина страницы | 16838 |
-| высота страницы | 11906 |
+| page width | 16838 |
+| page height | 11906 |
 
 <!--   LANDSCAPE   -->
 
-Повторный маркер той же ориентации ничего не меняет: этот абзац остаётся на той же альбомной странице.
+A repeated marker for the same orientation changes nothing: this paragraph stays on the same landscape page.
 
 <!-- portrait -->
 
-## Снова книжная
+## Back to portrait
 
-Текст после возврата к книжной ориентации.
+Text after returning to portrait orientation.
 
 ```text
 <!-- landscape -->
-это строка блока кода, а не маркер
+this is a code block line, not a marker
 ```
 
 <!--Portrait-->
 
-Маркер без пробелов внутри и той же ориентации ничего не делает.
+A marker with no spaces inside and the same orientation does nothing.
 
 <!-- landscape -->

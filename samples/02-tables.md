@@ -1,62 +1,62 @@
-| Столбец | Значение |
+| Column | Value |
 |---|---|
-| Первая таблица | открывает документ |
+| First table | opens the document |
 
-## Выравнивание колонок
+## Column alignment
 
-| Слева | По центру | Справа | По умолчанию |
+| Left | Center | Right | Default |
 |:---|:---:|---:|---|
-| альфа | бета | 100 | гамма |
-| дельта | эпсилон | 2 500 | дзета |
+| alpha | beta | 100 | gamma |
+| delta | epsilon | 2,500 | zeta |
 
-## Переносы, экранирование, пустые ячейки
+## Line breaks, escaping, empty cells
 
-| Ключ | Описание | Примечание |
+| Key | Description | Note |
 |---|---|---|
-| перенос | первая строка<br>вторая строка | через br |
-| слэш | строка один<br/>строка два<br />строка три | три варианта |
-| черта | значение \| с вертикальной чертой | экранирование |
-| пустая |  | средняя ячейка пуста |
-|  | без ключа |  |
-| короткая строка |
-| лишняя | ячейка | есть | отброшенная-ячейка |
+| break | first line<br>second line | via br |
+| slash | line one<br/>line two<br />line three | three variants |
+| pipe | value \| with a vertical bar | escaping |
+| empty |  | the middle cell is empty |
+|  | no key |  |
+| short row |
+| extra | cell | present | discarded-cell |
 
-## Разметка в ячейках
+## Markup in cells
 
-| Тип | Пример |
+| Type | Example |
 |---|---|
-| жирный | **полужирный текст** |
-| курсив | *наклонный текст* |
-| код | `inline-код` |
-| зачёркнутый | ~~старое значение~~ |
-| ссылка | [пример ссылки](https://example.com/cell) |
-| смесь | **жирный** и *курсив* и `код` |
+| bold | **bold text** |
+| italic | *italic text* |
+| code | `inline code` |
+| strikethrough | ~~old value~~ |
+| link | [sample link](https://example.com/cell) |
+| mix | **bold** and *italic* and `code` |
 
-## Узкая таблица 2×2
+## Narrow 2×2 table
 
-| А | Б |
+| A | B |
 |---|---|
 | 1 | 2 |
 
-## Длинный текст в ячейках
+## Long text in cells
 
-| Пункт | Формулировка |
+| Clause | Wording |
 |---|---|
-| 1 | Сторона обязуется предоставить доступ к сервису в течение пяти рабочих дней с момента подписания настоящего соглашения и уведомить другую сторону о готовности. |
-| 2 | Отчёт направляется ежемесячно не позднее десятого числа месяца, следующего за отчётным, в электронном виде с приложением сводной таблицы показателей. |
+| 1 | The party undertakes to provide access to the service within five business days of signing this agreement and to notify the other party that the service is ready. |
+| 2 | The report is sent monthly, no later than the tenth day of the month following the reporting month, in electronic form with a summary table of metrics attached. |
 
-## Две таблицы подряд
+## Two tables in a row
 
-| Первая | таблица |
+| First | table |
 |---|---|
 | x1 | y1 |
 
-| Вторая | таблица |
+| Second | table |
 |---|---|
 | x2 | y2 |
 
-Абзац между блоками.
+A paragraph between blocks.
 
-| Последняя | таблица |
+| Last | table |
 |---|---|
-| конец | документа |
+| end | of document |

@@ -183,12 +183,14 @@ def test_page_dark_by_default_with_token_and_version(srv):
     assert status == 200 and headers["Content-Type"] == "text/html; charset=utf-8"
     assert f'const TOKEN = "{srv.token}"' in page
     assert f"md2docx v{web.md2docx.__version__}" in page
-    assert '<html lang="ru" data-theme="dark">' in page
-    for label in ("Перетащите .md или .docx сюда", "исправить шрифты для Windows",
-                  "Из папки .docx не берутся", "Выбрать файлы", "Авто", "Всё альбомное",
-                  "Без автоальбомной", "готово", "ошибка", "шрифты исправлены",
-                  "исправлять нечего — подсказки на месте", "Скачать .docx", "Скачать всё (.zip)"):
+    assert '<html lang="en" data-theme="dark">' in page  # язык меняет скрипт: переводы — в I18N
+    for label in ("Drop .md or .docx files here", "fonts fixed for Windows", "Inside a folder, .docx files",
+                  "Choose files", "Auto", "All landscape", "No auto-landscape", '"done"', '"error"',
+                  '"fonts fixed"', "nothing to fix — the hints are in place", "Download .docx",
+                  "Download all (.zip)"):
         assert label in page, label
+    ru = json.loads(re.search(r"const I18N = (.*);\n", page)[1])["ru"]
+    assert ru["Drop .md or .docx files here"] == "Перетащите .md или .docx сюда" and ru["Auto"] == "Авто"
     assert 'accept=".md,.markdown,.docx,image/*"' in page
     assert client_comments(page) == [], "в клиентском коде — без комментариев"
     for planted in ("<!-- x -->", "<style>a{}/* x */</style>", "<script>f(); // x\n</script>",
@@ -345,7 +347,7 @@ def test_new_job_removes_previous_ones(srv):
                               ("POST", f"/api/jobs/{first}/convert", b"{}"),
                               ("PUT", f"/api/jobs/{first}/files?path=c.md", b"# C\n")):
         status, _, answer = call(srv, method, url, body)
-        assert (status, json.loads(answer)) == (404, {"error": web.GONE}), url
+        assert (status, json.loads(answer)) == (404, {"error": web.tr(web.GONE)}), url
     assert [p.name for p in srv.root.iterdir()] == [job], "запрос к удалённому заданию что-то создал"
 
 
@@ -441,7 +443,8 @@ def test_zip_names_unique_across_md_and_docx(srv):
 
 
 @pytest.mark.parametrize("rel", ["../evil.md", "a/../../evil.md", "../../../evil.md", "..", "a/..",
-                                 "<abs>", "a\\..\\evil.md", "a\x00evil.md", "", "a//evil.md", "./evil.md"])
+                                 "<abs>", "a\\..\\evil.md", "a\x00evil.md", "", "a//evil.md", "./evil.md",
+                                 "D:/evil.md", "a/D:/evil.md", "C:evil.md"])  # D: в Windows — другой диск
 def test_unsafe_paths_rejected_400(srv, tmp_path, rel):
     outside = tmp_path / "outside" / "evil.md"
     job = new_job(srv)

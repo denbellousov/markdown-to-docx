@@ -11,8 +11,8 @@
 Что сверяется (полный режим):
   * слова — мультимножество и порядок (проекция md без маркеров, комментариев и
     front matter; URL ссылок не входят; картинка — либо рисунок, либо заглушка
-    «[изображение: alt]», текст заглушки из сверки слов исключён, а её alt
-    сверяется с md отдельно);
+    «[image: alt]» на любом языке интерфейса (переводы — locales/*.json), текст
+    заглушки из сверки слов исключён, а её alt сверяется с md отдельно);
   * последовательность заголовков (уровень + текст), таблицы (число, размеры,
     тексты ячеек, выравнивание колонок, таблица без шапки), остатки разметки,
     нумерация списков, адреса гиперссылок по порядку;
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import re
 import sys
 import traceback
@@ -148,7 +149,11 @@ JUSTIFY = {"both", "distribute", "lowKashida", "mediumKashida", "highKashida",
            "thaiDistribute"}
 THEME_FONT_ATTRS = ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme")
 CODE_FONTS = {"Menlo", "Consolas", "Courier New"}
-PLACEHOLDER_RE = re.compile(r"\[изображение(?::[^\]]*)?\]")
+# заглушка картинки (§3.6) на языке интерфейса: английская и переводы → (начало, конец) вокруг alt
+PLACEHOLDERS = sorted(tuple(t.split("{alt}")) for t in {"[image: {alt}]"} | {
+    json.loads(p.read_text(encoding="utf-8"))["[image: {alt}]"]
+    for p in (Path(__file__).resolve().parents[1] / "locales").glob("*.json")})
+PLACEHOLDER_RE = re.compile("|".join(re.escape(head) + r"[^\]]*" + re.escape(tail) for head, tail in PLACEHOLDERS))
 
 # --------------------------------------------------------------------------
 # §5 — порядок дочерних элементов (ECMA-376). Кортеж = равноправные имена.
@@ -2659,15 +2664,19 @@ def check_text(rep, dx: Docx, md: MdModel):
         rep.err("images", f"картинок без файла (или удалённых) {missing}, заглушек «[изображение: "
                           f"…]» {n_ph}")
     # заглушка по порядку картинок md несёт alt как в md: сущности и \-экранирование (§3.6)
+    starts = re.compile("|".join(["\x02", *(re.escape(head) for head, _ in PLACEHOLDERS)]))  # рисунок, заглушка
     seq = []
     for p in dx.body.iter(q("p")):
         s = "".join("\x02" if x.tag == q("drawing") else (x.text or "")
                     for x in p.iter(q("t"), q("drawing")))
-        seq += [s[mm.start():] for mm in re.finditer(r"\x02|\[изображение", s)]
+        seq += [s[mm.start():] for mm in starts.finditer(s)]
     if len(seq) == len(md.images):
         for k, (got, (alt, _)) in enumerate(zip(seq, md.images), 1):
-            want = f"[изображение: {norm_ws(alt)}]"
-            if got[0] != "\x02" and norm_ws(alt) and not norm_ws(got).startswith(want):
+            if got[0] == "\x02" or not norm_ws(alt):
+                continue
+            head, tail = next(p for p in PLACEHOLDERS if got.startswith(p[0]))  # язык — по самой заглушке
+            want = norm_ws(f"{head}{norm_ws(alt)}{tail}")
+            if not norm_ws(got).startswith(want):
                 rep.err("images", f"картинка {k}: в docx «{short(norm_ws(got), 50)}», нужно "
                                   f"«{short(want, 50)}» (alt из md)")
 

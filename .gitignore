@@ -9,3 +9,5 @@ tests/real_docs.local.txt
 .DS_Store
 ~$*
 .playwright-mcp/
+build/
+dist/

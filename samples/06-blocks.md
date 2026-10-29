@@ -1,43 +1,43 @@
 ---
-title: Пример блоков
-author: Тестовый автор
+title: Blocks example
+author: Test author
 ---
 
-# Блоки и inline-разметка
+# Blocks and inline markup
 
-> Цитата первого уровня с **жирным** словом.
+> A first-level quote with a **bold** word.
 >
-> > Вложенная цитата второго уровня.
+> > A nested second-level quote.
 >
-> - пункт внутри цитаты
-> - ещё один пункт внутри цитаты
+> - an item inside the quote
+> - another item inside the quote
 
-Абзац с `inline-кодом`, [внешней ссылкой](https://example.com/blocks) и [якорной ссылкой](#bloki).
+A paragraph with `inline code`, an [external link](https://example.com/blocks), and an [anchor link](#blocks).
 
 ```text
-строка без отступа
-    четыре пробела
-	табуляция
-        восемь пробелов
+line without indentation
+    four spaces
+	one tab
+        eight spaces
 ```
 
-    отступной блок кода
-        с вложенным отступом
+    indented code block
+        with nested indentation
 
-![Схема процесса](missing-diagram.png)
+![Process diagram](missing-diagram.png)
 
 ---
 
-<div class="note">Текст из <b>HTML-блока</b> без тегов</div>
+<div class="note">Text from an <b>HTML block</b> without tags</div>
 
-Сущности: &laquo;кавычки&raquo; &amp; амперсанд &mdash; тире, &copy; знак.
+Entities: &laquo;quotes&raquo; &amp; ampersand &mdash; dash, &copy; sign.
 
-Жёсткий перенос двумя пробелами  
-и обратной косой чертой\
-конец абзаца.
+A hard line break with two spaces  
+and with a backslash\
+end of the paragraph.
 
-Комментарий <!-- скрытый текст --> внутри абзаца не выводится.
+A comment <!-- hidden text --> inside a paragraph is not rendered.
 
-<!-- отдельный комментарий тоже не выводится -->
+<!-- a standalone comment is not rendered either -->
 
-Последний абзац.
+The last paragraph.

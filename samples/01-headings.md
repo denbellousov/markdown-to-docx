@@ -1,43 +1,43 @@
-# Заголовок первого уровня
+# Level 1 heading
 
-Вводный абзац о заголовках: шесть уровней, сетекст, разметка внутри заголовка.
+An introductory paragraph about headings: six levels, setext headings, and markup inside a heading.
 
-## Второй уровень с **жирным**, *курсивом* и ~~зачёркнутым~~
+## Level 2 with **bold**, *italic*, and ~~strikethrough~~
 
-Текст под вторым уровнем.
+Text under level 2.
 
-### Третий уровень с `кодом` и [ссылкой](https://example.com/h3)
+### Level 3 with `code` and a [link](https://example.com/h3)
 
-Текст под третьим уровнем.
+Text under level 3.
 
-#### Четвёртый уровень
+#### Level 4
 
-Текст под четвёртым уровнем.
+Text under level 4.
 
-##### Пятый уровень
+##### Level 5
 
-Текст под пятым уровнем.
+Text under level 5.
 
-###### Шестой уровень курсивом
+###### Level 6 in italics
 
-Абзац после шестого уровня.
+Paragraph after level 6.
 
-Сетекст первого уровня
+Level 1 setext heading
 ======================
 
-Абзац под сетекстом первого уровня.
+Paragraph under the level 1 setext heading.
 
-Сетекст второго уровня
+Level 2 setext heading
 ----------------------
 
-Абзац под сетекстом второго уровня.
+Paragraph under the level 2 setext heading.
 
-## Заголовок<br>с переносом строки
+## Heading<br>with a line break
 
-### Ещё перенос<br/>через слэш<br />и с пробелом
+### Another break<br/>with a slash<br />and with a space
 
-## 2.1 Номер берётся из текста
+## 2.1 The number comes from the text
 
-## Заголовок с закрывающими решётками ##
+## Heading with closing hashes ##
 
-Последний абзац документа.
+The last paragraph of the document.

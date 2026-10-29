@@ -198,16 +198,16 @@ def test_orientation_markers(outdir):
     docx, proc = convert(outdir, sample("03-orientation-markers"))
     dx = V.Docx(docx)
     assert orient(dx) == ["P", "L", "P"], "маркеры: книжная → альбомная → книжная"
-    assert dx.section_index(find_p(dx, "Первая страница книжная")) == 0
-    assert dx.section_index(find_p(dx, "Альбомный участок")) == 1
+    assert dx.section_index(find_p(dx, "The first page is portrait")) == 0
+    assert dx.section_index(find_p(dx, "Landscape section")) == 1
     assert dx.tables[0].section == 1, "таблица после <!-- landscape --> — в альбомном разделе"
-    assert dx.section_index(find_p(dx, "Повторный маркер той же ориентации")) == 1, \
+    assert dx.section_index(find_p(dx, "A repeated marker for the same orientation")) == 1, \
         "повторный маркер той же ориентации не должен открывать раздел"
-    assert dx.section_index(find_p(dx, "Снова книжная")) == 2
-    code = find_p(dx, "это строка блока кода")
+    assert dx.section_index(find_p(dx, "Back to portrait")) == 2
+    code = find_p(dx, "this is a code block line")
     assert "<!-- landscape -->" in V.para_text(code), "маркер внутри блока кода — это текст кода"
     assert dx.section_index(code) == 2
-    assert dx.section_index(find_p(dx, "Маркер без пробелов")) == 2, \
+    assert dx.section_index(find_p(dx, "A marker with no spaces inside")) == 2, \
         "маркер в конце документа должен игнорироваться"
 
 
@@ -290,16 +290,15 @@ def test_auto_landscape_pull_and_glue(outdir):
     assert orient(dx) == ["L", "P"], \
         "начало документа уходит к широким таблицам, хвост возвращается на книжную"
     sec = dx.section_index
-    for text in ("Автоальбомная ориентация", "Вводный абзац на книжной странице",
-                 "Сравнение направлений", "Показатели по девяти направлениям:",
-                 "Продолжение сравнения"):
+    for text in ("Automatic landscape orientation", "An introductory paragraph on a portrait page",
+                 "Comparison by area", "Metrics for nine areas:", "Comparison, continued"):
         assert sec(find_p(dx, text)) == 0, f"«{text}» — в альбомном разделе вместе с таблицей"
-    wide1, wide2 = find_table(dx, "Аудитория"), find_table(dx, "Монетизация")
+    wide1, wide2 = find_table(dx, "Audience"), find_table(dx, "Monetization")
     assert wide1.section == wide2.section == 0, "склейка: обе широкие таблицы в одном разделе"
-    assert sec(find_p(dx, "Абзац после широких таблиц")) == 1
-    narrow = find_table(dx, "остаётся")
+    assert sec(find_p(dx, "The paragraph after the wide tables")) == 1
+    narrow = find_table(dx, "stays")
     assert narrow.section == 1, "узкая таблица остаётся книжной"
-    assert sec(find_p(dx, "Финальный абзац документа")) == 1
+    assert sec(find_p(dx, "The final paragraph of the document")) == 1
     for t in (wide1, wide2):
         assert sum(t.grid) == V.TEXT_WIDTH["L"], "широкая таблица — во всю ширину альбомной"
     m = re.search(r"авто-альбомных\s+(\d+)", proc.stdout)
@@ -340,7 +339,7 @@ def test_pagebreaks(outdir):
     assert breaks == [0, 0, 0, 0], (f"ожидалось 4 разрыва страницы в первом разделе (маркер в "
                                     f"начале и в конце игнорируются, два подряд — один), "
                                     f"найдено по разделам: {breaks}")
-    assert dx.section_index(find_p(dx, "Шестая страница альбомная")) == 1
+    assert dx.section_index(find_p(dx, "Sixth page, landscape")) == 1
 
 
 def test_pagebreak_line_inside_paragraph(tmp_path):
@@ -655,7 +654,7 @@ def test_two_tables_separator_and_edges(outdir):
     assert not V.has_content(sep)
     assert spacing(dx, sep) == {"before": 0, "after": 0, "line": 160, "lineRule": "exact"}
     last = dx.tables[-1]
-    assert "конец" in V.cell_text(last.rows[1][0]), "последний блок — таблица"
+    assert "end" in V.cell_text(last.rows[1][0]), "последний блок — таблица"
     tail = kids[kids.index(last.el) + 1:]
     assert [V.local(c) for c in tail] == ["p", "sectPr"], \
         f"после последней таблицы — один абзац и конец, а не {[V.local(c) for c in tail]}"
@@ -667,7 +666,7 @@ def test_two_tables_separator_and_edges(outdir):
 def test_table_cells(outdir):
     docx, _ = convert(outdir, sample("02-tables"))
     dx = V.Docx(docx)
-    al = find_table(dx, "По центру")
+    al = find_table(dx, "Center")
     want = [None, "center", "right", None]
     for ri, row in enumerate(al.rows):
         for ci, tc in enumerate(row):
@@ -678,37 +677,37 @@ def test_table_cells(outdir):
                 else:
                     assert jc in ((want[ci],) if want[ci] == "center" else ("right", "end")), \
                         (ri, ci, jc)
-    br = find_table(dx, "перенос")
+    br = find_table(dx, "break")
     cell = br.rows[1][1]
-    assert V.norm_lines(V.cell_text(cell)) == ("первая строка", "вторая строка"), \
+    assert V.norm_lines(V.cell_text(cell)) == ("first line", "second line"), \
         "<br> в ячейке — перенос строки"
-    assert V.norm_lines(V.cell_text(br.rows[2][1])) == ("строка один", "строка два", "строка три")
-    assert V.norm_ws(V.cell_text(br.rows[3][1])) == "значение | с вертикальной чертой"
+    assert V.norm_lines(V.cell_text(br.rows[2][1])) == ("line one", "line two", "line three")
+    assert V.norm_ws(V.cell_text(br.rows[3][1])) == "value | with a vertical bar"
     assert V.cell_text(br.rows[4][1]).strip() == ""
-    assert [V.cell_text(tc).strip() for tc in br.rows[5]] == ["", "без ключа", ""]
-    assert [V.cell_text(tc).strip() for tc in br.rows[6]] == ["короткая строка", "", ""], \
+    assert [V.cell_text(tc).strip() for tc in br.rows[5]] == ["", "no key", ""]
+    assert [V.cell_text(tc).strip() for tc in br.rows[6]] == ["short row", "", ""], \
         "короткая строка дополняется пустыми ячейками"
-    assert len(br.rows[7]) == 3 and "отброшенная" not in V.docx_text(dx), \
+    assert len(br.rows[7]) == 3 and "discarded" not in V.docx_text(dx), \
         "лишняя ячейка отбрасывается"
-    mk = find_table(dx, "полужирный текст")
+    mk = find_table(dx, "bold text")
     cells = {V.cell_text(r[0]).strip(): r[1] for r in mk.rows[1:]}
 
     def run_in(cellname, text):
         tc = cells[cellname]
         return tc, run_with_text(tc.find(q("p")), text)
 
-    tc, r = run_in("жирный", "полужирный текст")
+    tc, r = run_in("bold", "bold text")
     assert V.is_on(dx.eff_rpr(r, tc.find(q("p")), "b"))
-    tc, r = run_in("курсив", "наклонный текст")
+    tc, r = run_in("italic", "italic text")
     assert V.is_on(dx.eff_rpr(r, tc.find(q("p")), "i"))
-    tc, r = run_in("зачёркнутый", "старое значение")
+    tc, r = run_in("strikethrough", "old value")
     assert V.is_on(dx.eff_rpr(r, tc.find(q("p")), "strike"))
-    tc, r = run_in("код", "inline-код")
+    tc, r = run_in("code", "inline code")
     p = tc.find(q("p"))
     assert dx.eff_font(r, p) == "Menlo"
     assert V.to_int(wa(dx.eff_rpr(r, p, "sz"), "val")) == 20
     assert (wa(dx.eff_rpr(r, p, "shd"), "fill") or "").upper() == "F2F2F2"
-    hl = [h for h in cells["ссылка"].iter(q("hyperlink"))]
+    hl = [h for h in cells["link"].iter(q("hyperlink"))]
     assert hl, "ссылка в ячейке — настоящая гиперссылка"
     rel = dx.rel_by_id[hl[0].get("{%s}id" % V.R_NS)]
     assert rel.get("Target") == "https://example.com/cell"
@@ -1075,23 +1074,22 @@ def test_headings(outdir):
         lv = dx.heading_level(p)
         if lv:
             assert dx.pstyle_id(p) == f"Heading{lv}", "встроенные стили Heading1…6"
-    h = find_p(dx, "Заголовок")
+    h = find_p(dx, "Level 1 heading")
     assert dx.heading_level(h) == 1
-    h2 = find_p(dx, "Второй уровень с ")
-    assert V.is_on(dx.eff_rpr(run_with_text(h2, "курсивом"), h2, "i"))
-    assert V.is_on(dx.eff_rpr(run_with_text(h2, "зачёркнутым"), h2, "strike"))
-    h3 = find_p(dx, "Третий уровень с ")
-    assert dx.eff_font(run_with_text(h3, "кодом"), h3) == "Menlo"
+    h2 = find_p(dx, "Level 2 with ")
+    assert V.is_on(dx.eff_rpr(run_with_text(h2, "italic"), h2, "i"))
+    assert V.is_on(dx.eff_rpr(run_with_text(h2, "strikethrough"), h2, "strike"))
+    h3 = find_p(dx, "Level 3 with ")
+    assert dx.eff_font(run_with_text(h3, "code"), h3) == "Menlo"
     assert any(True for _ in h3.iter(q("hyperlink")))
-    brh = find_p(dx, "с переносом строки")
-    assert V.norm_lines(V.para_text(brh)) == ("Заголовок", "с переносом строки")
+    brh = find_p(dx, "with a line break")
+    assert V.norm_lines(V.para_text(brh)) == ("Heading", "with a line break")
     assert sum(1 for _ in brh.iter(q("br"))) == 1
-    br3 = find_p(dx, "через слэш")
-    assert V.norm_lines(V.para_text(br3)) == ("Ещё перенос", "через слэш", "и с пробелом")
-    assert V.norm_ws(V.para_text(find_p(dx, "Номер берётся"))) == "2.1 Номер берётся из текста"
-    assert V.norm_ws(V.para_text(find_p(dx, "закрывающими"))) == \
-        "Заголовок с закрывающими решётками"
-    assert V.core_props(dx)["title"] == "Заголовок первого уровня"
+    br3 = find_p(dx, "with a slash")
+    assert V.norm_lines(V.para_text(br3)) == ("Another break", "with a slash", "and with a space")
+    assert V.norm_ws(V.para_text(find_p(dx, "The number comes"))) == "2.1 The number comes from the text"
+    assert V.norm_ws(V.para_text(find_p(dx, "closing hashes"))) == "Heading with closing hashes"
+    assert V.core_props(dx)["title"] == "Level 1 heading"
 
 
 def test_title_without_h1(outdir):
@@ -1167,31 +1165,32 @@ def test_numbering_restart(outdir):
     docx, _ = convert(outdir, sample("05-lists"))
     dx = V.Docx(docx)
     n = {t: _num(dx, find_p(dx, t)) for t in (
-        "Первый пункт", "Второй пункт", "Вложенный пункт второго уровня", "Пункт третьего уровня",
-        "Ещё пункт второго уровня", "Последний пункт маркированного списка",
-        "Третий пункт", "Четвёртый пункт", "Вложенный нумерованный", "Второй вложенный",
-        "Пятый пункт", "Альфа", "Бета", "Гамма", "Дельта", "Эпсилон со скобкой",
-        "Дзета со скобкой", "Первый абзац пункта.", "Следующий пункт.")}
-    assert n["Альфа"][0] == n["Бета"][0]
-    assert n["Гамма"][0] == n["Дельта"][0]
-    assert n["Эпсилон со скобкой"][0] == n["Дзета со скобкой"][0]
-    assert len({n["Альфа"][0], n["Гамма"][0], n["Эпсилон со скобкой"][0],
-                n["Третий пункт"][0], n["Первый абзац пункта."][0]}) == 5, \
+        "First item", "Second item", "Nested second-level item", "Third-level item",
+        "Another second-level item", "Last item of the bulleted list",
+        "Third item", "Fourth item", "Nested numbered item", "Second nested item",
+        "Fifth item", "Alpha", "Beta", "Gamma", "Delta", "Epsilon with a parenthesis",
+        "Zeta with a parenthesis", "First paragraph of the item.", "Next item.")}
+    assert n["Alpha"][0] == n["Beta"][0]
+    assert n["Gamma"][0] == n["Delta"][0]
+    assert n["Epsilon with a parenthesis"][0] == n["Zeta with a parenthesis"][0]
+    assert len({n["Alpha"][0], n["Gamma"][0], n["Epsilon with a parenthesis"][0],
+                n["Third item"][0], n["First paragraph of the item."][0]}) == 5, \
         "соседние списки — разные w:num, иначе нумерация продолжится"
-    assert n["Вложенный нумерованный"][0] != n["Третий пункт"][0], \
+    assert n["Nested numbered item"][0] != n["Third item"][0], \
         "вложенный список — свой w:num"
-    for text, ilvl, start, txt in (("Альфа", 0, 1, "%1."), ("Гамма", 0, 1, "%1."),
-                                   ("Эпсилон со скобкой", 0, 1, "%1)"), ("Третий пункт", 0, 3, "%1."),
-                                   ("Вложенный нумерованный", 1, 1, "%2."),
-                                   ("Первый абзац пункта.", 0, 1, "%1.")):
+    for text, ilvl, start, txt in (("Alpha", 0, 1, "%1."), ("Gamma", 0, 1, "%1."),
+                                   ("Epsilon with a parenthesis", 0, 1, "%1)"),
+                                   ("Third item", 0, 3, "%1."),
+                                   ("Nested numbered item", 1, 1, "%2."),
+                                   ("First paragraph of the item.", 0, 1, "%1.")):
         nid, lv = n[text]
         assert lv == ilvl, (text, lv)
         lvl, so = _lvl(dx, nid, ilvl)
         assert wa(lvl.find(q("numFmt")), "val") == "decimal", text
         assert wa(lvl.find(q("lvlText")), "val") == txt, text
         assert so.get(ilvl) == start, f"«{text}»: startOverride {so.get(ilvl)}, нужно {start}"
-    for text, ilvl in (("Первый пункт", 0), ("Вложенный пункт второго уровня", 1),
-                       ("Пункт третьего уровня", 2)):
+    for text, ilvl in (("First item", 0), ("Nested second-level item", 1),
+                       ("Third-level item", 2)):
         nid, lv = n[text]
         assert lv == ilvl
         lvl, _ = _lvl(dx, nid, ilvl)
@@ -1200,14 +1199,14 @@ def test_numbering_restart(outdir):
         ind = lvl.find("w:pPr/w:ind", NS)
         assert V.to_int(wa(ind, "left") or wa(ind, "start")) == 360 * (ilvl + 1)
         assert V.to_int(wa(ind, "hanging")) == 360
-    last_of_outer = {"Последний пункт маркированного списка", "Пятый пункт", "Бета", "Дельта",
-                     "Дзета со скобкой", "Следующий пункт."}
+    last_of_outer = {"Last item of the bulleted list", "Fifth item", "Beta", "Delta",
+                     "Zeta with a parenthesis", "Next item."}
     for text in n:
         p = find_p(dx, text)
         want = 160 if text in last_of_outer else 80
         assert spacing(dx, p)["after"] == want, f"«{text}»: after={spacing(dx, p)['after']}, нужно {want}"
         assert dx.pstyle_id(p) in ("Normal", dx.default_pstyle), "пункт — стиль Normal + numPr"
-    second = find_p(dx, "Второй абзац того же пункта.")
+    second = find_p(dx, "Second paragraph of the same item.")
     assert second.find("w:pPr/w:numPr", NS) is None, "второй абзац пункта — без numPr"
     assert V.to_int(dx.eff_ppr(second, "ind", "left") or dx.eff_ppr(second, "ind", "start")) == 360
 
@@ -1302,10 +1301,10 @@ def test_blocks(outdir):
     docx, proc = convert(outdir, sample("06-blocks"))
     dx = V.Docx(docx)
     text = V.docx_text(dx)
-    for gone in ("Пример блоков", "Тестовый автор", "title:", "скрытый текст",
-                 "отдельный комментарий"):
+    for gone in ("Blocks example", "Test author", "title:", "hidden text",
+                 "standalone comment"):
         assert gone not in text, f"«{gone}» не должно попасть в docx"
-    q1, q2 = find_p(dx, "Цитата первого уровня"), find_p(dx, "Вложенная цитата")
+    q1, q2 = find_p(dx, "A first-level quote"), find_p(dx, "A nested second-level quote")
     quote = dx.styles_by_id.get(dx.pstyle_id(q1))
     assert quote is not None and (wa(quote.find(q("name")), "val") or "") == "Quote"
     assert dx.pstyle_id(q2) == dx.pstyle_id(q1)
@@ -1319,14 +1318,14 @@ def test_blocks(outdir):
     assert (wa(color, "val") or "").upper() == "555555" and wa(color, "themeColor") is None, \
         "цвет цитаты 555555 без themeColor (themeColor перебивает val)"
     assert V.is_on(quote.find("w:rPr/w:i", NS))
-    item = find_p(dx, "пункт внутри цитаты")
+    item = find_p(dx, "an item inside the quote")
     nid, ilvl = _num(dx, item)
     lvl, _ = _lvl(dx, nid, ilvl)
     own = V.to_int(dx.eff_ppr(item, "ind", "left"))
     lvl_left = V.to_int(wa(lvl.find("w:pPr/w:ind", NS), "left"))
     assert (own if own is not None else lvl_left) == 720, "список в цитате — с отступом цитаты"
-    para = find_p(dx, "Абзац с ")
-    r = run_with_text(para, "inline-кодом")
+    para = find_p(dx, "A paragraph with ")
+    r = run_with_text(para, "inline code")
     assert dx.eff_font(r, para) == "Menlo" and V.to_int(wa(dx.eff_rpr(r, para, "sz"), "val")) == 20
     assert (wa(dx.eff_rpr(r, para, "shd"), "fill") or "").upper() == "F2F2F2"
     links = list(para.iter(q("hyperlink")))
@@ -1334,28 +1333,28 @@ def test_blocks(outdir):
     assert len(ext) == 1, "одна внешняя гиперссылка, якорная — просто текст"
     rel = dx.rel_by_id[ext[0].get("{%s}id" % V.R_NS)]
     assert rel.get("Target") == "https://example.com/blocks" and rel.get("TargetMode") == "External"
-    assert "внешней ссылкой" in V.para_text(ext[0])
-    assert all("якорной" not in V.para_text(h) for h in links)
+    assert "external link" in V.para_text(ext[0])
+    assert all("anchor" not in V.para_text(h) for h in links)
     hr_run = ext[0].find(q("r"))
     assert wa(hr_run.find("w:rPr/w:rStyle", NS), "val") is not None
     hstyle = dx.styles_by_id[wa(hr_run.find("w:rPr/w:rStyle", NS), "val")]
     assert (wa(hstyle.find("w:rPr/w:color", NS), "val") or "").upper() == "0563C1"
     assert wa(hstyle.find("w:rPr/w:u", NS), "val") == "single"
-    code = find_p(dx, "строка без отступа")
+    code = find_p(dx, "line without indentation")
     assert V.para_text(code) == \
-        "строка без отступа\n    четыре пробела\n\tтабуляция\n        восемь пробелов", \
+        "line without indentation\n    four spaces\n\tone tab\n        eight spaces", \
         f"блок кода — один абзац, отступы и табы сохранены: {V.para_text(code)!r}"
     for t in code.iter(q("t")):
         if t.text and (t.text != t.text.strip()):
             assert t.get("{http://www.w3.org/XML/1998/namespace}space") == "preserve"
-    rc = run_with_text(code, "четыре")
+    rc = run_with_text(code, "four")
     assert dx.eff_font(rc, code) == "Menlo" and V.to_int(wa(dx.eff_rpr(rc, code, "sz"), "val")) == 20
     assert (dx.eff_ppr(code, "shd", "fill") or "").upper() == "F2F2F2"
     assert spacing(dx, code) == {"before": 0, "after": 160, "line": 240, "lineRule": "auto"}
     assert dx.eff_ppr(code, "jc", "val") in (None, "left", "start")
-    ind_code = find_p(dx, "отступной блок кода")
-    assert V.para_text(ind_code) == "отступной блок кода\n    с вложенным отступом"
-    ph = find_p(dx, "[изображение: Схема процесса]")
+    ind_code = find_p(dx, "indented code block")
+    assert V.para_text(ind_code) == "indented code block\n    with nested indentation"
+    ph = find_p(dx, "[изображение: Process diagram]")
     pr = run_with_text(ph, "изображение")
     assert V.is_on(dx.eff_rpr(pr, ph, "i")), "заглушка картинки курсивом"
     col = (wa(dx.eff_rpr(pr, ph, "color"), "val") or "").upper()
@@ -1370,18 +1369,18 @@ def test_blocks(outdir):
     b = hrs[0].find("w:pPr/w:pBdr/w:bottom", NS)
     assert (wa(b, "val"), wa(b, "sz"), wa(b, "space"), (wa(b, "color") or "").upper()) == \
         ("single", "6", "1", "BBBBBB") and not V.para_text(hrs[0]).strip()
-    assert V.norm_ws(V.para_text(find_p(dx, "Текст из"))) == "Текст из HTML-блока без тегов"
+    assert V.norm_ws(V.para_text(find_p(dx, "Text from"))) == "Text from an HTML block without tags"
     assert any(x.startswith("Внимание:") and "HTML" in x for x in proc.stderr.splitlines()), \
         f"HTML-блок — с предупреждением: {proc.stderr!r}"
-    assert V.norm_ws(V.para_text(find_p(dx, "Сущности:"))) == \
-        "Сущности: «кавычки» & амперсанд — тире, © знак."
-    hb = find_p(dx, "Жёсткий перенос")
-    assert V.norm_lines(V.para_text(hb)) == ("Жёсткий перенос двумя пробелами",
-                                             "и обратной косой чертой", "конец абзаца.")
-    assert V.norm_ws(V.para_text(find_p(dx, "Комментарий"))) == \
-        "Комментарий внутри абзаца не выводится."
+    assert V.norm_ws(V.para_text(find_p(dx, "Entities:"))) == \
+        "Entities: «quotes» & ampersand — dash, © sign."
+    hb = find_p(dx, "A hard line break")
+    assert V.norm_lines(V.para_text(hb)) == ("A hard line break with two spaces",
+                                             "and with a backslash", "end of the paragraph.")
+    assert V.norm_ws(V.para_text(find_p(dx, "A comment"))) == \
+        "A comment inside a paragraph is not rendered."
     cp = V.core_props(dx)
-    assert cp["title"] == "Блоки и inline-разметка" and not cp["author"]
+    assert cp["title"] == "Blocks and inline markup" and not cp["author"]
 
 
 WP_INLINE = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}inline"
@@ -2191,7 +2190,9 @@ def test_fix_fonts_restores_hints(tmp_path, outdir):
 
 
 # Настоящие файлы после Word для Mac 16.114: выход md2docx 0.2.0 для samples/02 и samples/06,
-# открытый и сохранённый в Word; в docProps/core.xml автор и «кем изменён» заменены на «Тест»
+# открытый и сохранённый в Word; в docProps/core.xml автор и «кем изменён» заменены на «Тест».
+# Образцы с тех пор переведены на английский — исходники фикстур, русские оригиналы, лежат рядом
+# (fixtures/02-tables.md, fixtures/06-blocks.md)
 FIXTURES = TESTS / "fixtures"
 HINTS = ("altName", "family", "panose1", "pitch")
 
@@ -2209,7 +2210,7 @@ def test_fix_fonts_word_mac_fixture(tmp_path, outdir, smp):
     возвращает подсказки, как в выходе md2docx; сверщик больше не видит расхождений шрифтов,
     остальные (правки Word) те же; прочие члены zip — те же байты в том же порядке; повторный
     запуск — «без изменений», файл не переписан (SPEC §1, §3.2)."""
-    md, doc = sample(smp), tmp_path / f"{smp}-resaved.docx"
+    md, doc = FIXTURES / f"{smp}.md", tmp_path / f"{smp}-resaved.docx"
     shutil.copy(FIXTURES / doc.name, doc)
     fonts = _font_fields(doc)
     assert all("altName" not in fonts[name] for name in (V.HN, "Menlo")), \
@@ -2223,7 +2224,8 @@ def test_fix_fonts_word_mac_fixture(tmp_path, outdir, smp):
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert proc.stdout.strip() == (f"Готово: {doc} — восстановлены подсказки шрифтов: "
                                    f"Helvetica Neue (altName, family), Menlo (altName)"), proc.stdout
-    want, got = _font_fields(convert(outdir, md)[0]), _font_fields(doc)
+    # своё имя результата: выход образца того же имени (samples/) уже лежит в outdir
+    want, got = _font_fields(convert(outdir, md, stem=f"{smp}-ru")[0]), _font_fields(doc)
     for name in (V.HN, "Menlo"):
         assert {k: got[name].get(k) for k in HINTS} == {k: want[name].get(k) for k in HINTS}, name
     with zipfile.ZipFile(doc) as z:
@@ -2256,7 +2258,7 @@ def test_word_mac_fixture_not_overwritten(tmp_path, smp):
     out = tmp_path / f"{smp}.docx"
     shutil.copy(FIXTURES / f"{smp}-resaved.docx", out)
     before = out.read_bytes()
-    proc = api(REFUSE_SCRIPT, sample(smp), out, cwd=tmp_path)
+    proc = api(REFUSE_SCRIPT, FIXTURES / f"{smp}.md", out, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert proc.stdout.strip() == (f"FileExistsError: {out} уже существует и правился после "
                                    f"конвертации или создан не md2docx — не перезаписываю; чтобы "
@@ -2756,6 +2758,16 @@ POPPLER = all(shutil.which(x) for x in ("pdfinfo", "pdftotext", "pdffonts", "pdf
 need_render = pytest.mark.skipif(not (SOFFICE and POPPLER),
                                  reason="нет LibreOffice или poppler — рендер не проверяется")
 RENDER_SAMPLES = ("02-tables", "03-orientation-markers", "04-auto-landscape", "07-pagebreak")
+# Русские оригиналы 02 и 04 (образцы переведены на английский): кириллица в колонке шириной
+# в слово шапки (02) и в широких таблицах почти во всю альбомную страницу (04: запас 4–8 %,
+# у английского образца — 23–25 %). Без них рендер не проверял бы замер слов кириллицы
+RENDER_RU = {f"{name}-ru": name for name in ("02-tables", "04-auto-landscape")}
+
+
+def _render_md(name: str) -> Path:
+    return FIXTURES / f"{RENDER_RU[name]}.md" if name in RENDER_RU else sample(name)
+
+
 # Синтетические входы рендера (A1.1, A1.5, A1.7, A1.9). Длина таблицы (tail-N) и число абзацев
 # перед ней (fill-N) перебираются, чтобы граница страницы прошла через начало и конец таблицы при
 # любых метриках шрифта: на 0.1.1 в этих диапазонах были и одинокая строка, и пустая страница
@@ -2804,6 +2816,7 @@ def rendered(outdir, tmp_path_factory):
     profile = Path(os.environ.get("MD2DOCX_LO_PROFILE") or tmp_path_factory.mktemp("lo-profile"))
     md_dir = tmp_path_factory.mktemp("render-md")
     sources = [(name, sample(name), None) for name in RENDER_SAMPLES]
+    sources += [(name, _render_md(name), name) for name in RENDER_RU]
     for name, text in RENDER_SYNTH.items():
         (md_dir / f"{name}.md").write_text(text, encoding="utf-8")
         sources.append((name, md_dir / f"{name}.md", f"render-{name}"))
@@ -2888,12 +2901,12 @@ def _cell_words(md_path: Path):
 
 
 @need_render
-@pytest.mark.parametrize("name", RENDER_SAMPLES)
+@pytest.mark.parametrize("name", RENDER_SAMPLES + tuple(RENDER_RU))
 @pytest.mark.parametrize("variant", ["hn", "arial"])
 def test_render(rendered, name, variant):
     pdf = rendered[(name, variant)]
     pages = _pages(pdf)
-    exp = V.parse_orient_list(EXPECT_ORIENT[name])
+    exp = V.parse_orient_list(EXPECT_ORIENT[RENDER_RU.get(name, name)])
     assert _collapse(pages) == _collapse(exp), f"{name}/{variant}: страницы {pages}, разделы {exp}"
     for i in range(1, len(pages) + 1):
         assert _page_text(pdf, i).strip(), f"{name}/{variant}: страница {i} пустая"
@@ -2903,8 +2916,9 @@ def test_render(rendered, name, variant):
                                               capture_output=True, text=True).stdout)
     # слово ищется не «есть ли где-то», а сколько раз: разорванное в одной таблице и
     # целое в другой иначе проходит незамеченным
-    md_text = V.parse_md(sample(name)).text
-    broken = sorted(w_ for w_ in _cell_words(sample(name))
+    md = _render_md(name)
+    md_text = V.parse_md(md).text
+    broken = sorted(w_ for w_ in _cell_words(md)
                     if _occurrences(w_, flat) < _occurrences(w_, md_text))
     assert not broken, f"{name}/{variant}: слова из ячеек разорваны или потеряны: {broken[:10]}"
     with_tables = 0
@@ -2916,7 +2930,7 @@ def test_render(rendered, name, variant):
         assert abs(left - MARGIN_PT) <= 1.0 and abs(right - (page_w - MARGIN_PT)) <= 1.0, \
             (f"{name}/{variant}, стр. {i}: границы таблицы x={left:.1f}…{right:.1f} pt, "
              f"поля — {MARGIN_PT:.1f}…{page_w - MARGIN_PT:.1f} pt")
-    if V.parse_md(sample(name)).tables:
+    if V.parse_md(md).tables:
         assert with_tables, f"{name}/{variant}: на страницах не найдено ни одной границы таблицы"
     if variant == "arial":
         fonts = subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True).stdout
