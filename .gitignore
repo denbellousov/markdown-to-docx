@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+out/
+*.docx
+!samples/**/*.docx
+!tests/fixtures/*.docx
+# Необязательный локальный список своих документов для регрессии — не коммитить
+tests/real_docs.local.txt
+.DS_Store
+~$*
+.playwright-mcp/
