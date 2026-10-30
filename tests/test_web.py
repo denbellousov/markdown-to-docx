@@ -56,6 +56,23 @@ def srv(tmp_path):
     assert not server.root.exists(), "временный каталог не удалён"
 
 
+@pytest.fixture
+def app_srv(tmp_path):
+    """Сервер приложения: окно «Сохранить» подменено — отдаёт путь chosen (None — «Отмена»)
+    и запоминает в asked предложенные в нём имена."""
+    def save_as(name):
+        server.asked.append(name)
+        return server.chosen
+
+    server = web.Server(0, tmp_parent=tmp_path, app=True, save_as=save_as)
+    server.chosen, server.asked = None, []
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    yield server
+    server.shutdown()
+    server.server_close()
+    server.cleanup()
+
+
 def call(srv, method, path, body=None, *, token=True, headers=None):
     """Запрос → (статус, заголовки, тело). Host — 127.0.0.1:<порт>, как у браузера."""
     conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=120)
@@ -91,6 +108,12 @@ def fetch(srv, url):
     status, headers, body = call(srv, "GET", url)
     assert status == 200, body[:500]
     return headers, body
+
+
+def save(srv, url):
+    """«Скачать» в окне приложения: (статус, ответ)."""
+    status, _, body = call(srv, "POST", url)
+    return status, json.loads(body)
 
 
 def stored(srv):
@@ -222,6 +245,21 @@ def test_zip_button_hidden_until_server_offers_zip(srv):
     assert not initially_hidden('<div class="actions"><a id="zip">z</a></div><p hidden></p>', "zip")
 
 
+def test_page_in_the_app_saves_through_the_server_in_system_language(app_srv, srv, monkeypatch):
+    """В окне приложения страница сохраняет через сервер (окно «Сохранить» показывает приложение)
+    и берёт язык системы: окно называет языки своего пакета, а не выбранные в системе."""
+    monkeypatch.setattr(web.md2docx, "system_language", lambda: "de")
+    in_app = call(app_srv, "GET", "/", token=False)[2].decode()
+    in_browser = call(srv, "GET", "/", token=False)[2].decode()
+    assert "const APP = true;" in in_app and 'const SYSLANG = "de";' in in_app
+    assert "const APP = false;" in in_browser and "const SYSLANG = null;" in in_browser
+    assert "[saved, SYSLANG, ...(navigator.languages || []), navigator.language]" in in_app, \
+        "язык системы — не сразу после выбранного на странице"
+    assert re.search(r'if \(APP\) \{\s*const r = await request\("POST", url\);', in_app), \
+        "в окне приложения скачивает WebKit"
+    assert "if (data.error) throw new Error(data.error);" in in_app, "ошибку записи страница не покажет"
+
+
 # --------------------------------------------------------------------------
 # Конвертация: то же, что CLI
 # --------------------------------------------------------------------------
@@ -349,6 +387,80 @@ def test_new_job_removes_previous_ones(srv):
         status, _, answer = call(srv, method, url, body)
         assert (status, json.loads(answer)) == (404, {"error": web.tr(web.GONE)}), url
     assert [p.name for p in srv.root.iterdir()] == [job], "запрос к удалённому заданию что-то создал"
+
+
+def test_app_saves_where_the_dialog_says(app_srv, tmp_path):
+    """«Скачать .docx» и .zip в окне приложения: сервер пишет файл туда, куда указали в окне «Сохранить»,
+    и поверх существующего («Заменить»): загрузка силами WebKit такой файл молча не перезаписывает."""
+    out = tmp_path / "out"
+    out.mkdir()
+    job = new_job(app_srv)
+    for md in SAMPLE_FILES[:2]:
+        assert upload(app_srv, job, md.name, md.read_bytes())[0] == 201
+    data = run(app_srv, job)
+    first = data["results"][0]
+    target = out / first["name"]
+    target.write_bytes(b"OLD")
+    app_srv.chosen = str(target)
+    assert save(app_srv, first["url"]) == (200, {"saved": True})
+    assert target.read_bytes() == fetch(app_srv, first["url"])[1], "существующий файл не заменён"
+    app_srv.chosen = str(out / "all.zip")
+    assert save(app_srv, data["zip"]) == (200, {"saved": True})
+    with zipfile.ZipFile(out / "all.zip") as z:
+        assert z.testzip() is None and z.namelist() == [r["name"] for r in data["results"]]
+    app_srv.chosen = None  # «Отмена»
+    assert save(app_srv, first["url"]) == (200, {"saved": False})
+    assert app_srv.asked == [first["name"], "md2docx.zip", first["name"]]
+    assert sorted(p.name for p in out.iterdir()) == sorted([first["name"], "all.zip"])
+
+
+def test_app_save_answers_while_the_dialog_is_open(app_srv, monkeypatch):
+    """Окно «Сохранить» может быть открыто дольше минуты, а WebKit ждёт данных не больше минуты:
+    заголовки ответа — сразу, пока окно открыто — пробелы, итог — в теле ответа."""
+    monkeypatch.setattr(web, "KEEPALIVE", 0.05)
+    job = new_job(app_srv)
+    assert upload(app_srv, job, "a.md", b"# A\n")[0] == 201
+    url = run(app_srv, job)["results"][0]["url"]
+    closed = threading.Event()  # пользователь закрыл окно «Сохранить» («Отмена»)
+    app_srv.save_as = lambda name: closed.wait(10) and None
+    conn = http.client.HTTPConnection("127.0.0.1", app_srv.port, timeout=10)
+    try:
+        conn.request("POST", url, headers={"X-Token": app_srv.token})
+        resp = conn.getresponse()
+        assert resp.status == 200 and resp.read(3) == b"   ", "пока окно открыто, ответ молчит"
+        assert not closed.is_set()
+        closed.set()
+        assert json.loads(resp.read()) == {"saved": False}
+    finally:
+        closed.set()
+        conn.close()
+
+
+def test_app_save_errors(app_srv, tmp_path):
+    """Записать не удалось — причина и путь в ответе (заголовки ушли, пока окно было открыто);
+    результат успели заменить — 404, и окно «Сохранить» не открывается: сохранять нечего."""
+    job = new_job(app_srv)
+    assert upload(app_srv, job, "a.md", b"# A\n")[0] == 201
+    url = run(app_srv, job)["results"][0]["url"]
+    app_srv.chosen = str(tmp_path)  # каталог, а не файл
+    status, answer = save(app_srv, url)
+    assert status == 200 and str(tmp_path) in answer["error"], answer
+    for p in app_srv.root.rglob("*.docx"):
+        p.unlink()
+    asked = len(app_srv.asked)
+    assert save(app_srv, url) == (404, {"error": web.tr("the result has been updated — download it again")})
+    assert len(app_srv.asked) == asked, "окно «Сохранить» открылось, хотя сохранять нечего"
+
+
+def test_browser_page_has_no_save_route(srv):
+    """Страницу в браузере (запуск из терминала) сервер через окно не сохраняет: скачивает сам браузер."""
+    job = new_job(srv)
+    for name in ("a.md", "b.md"):
+        assert upload(srv, job, name, b"# A\n")[0] == 201
+    data = run(srv, job)
+    for url in (data["results"][0]["url"], data["zip"]):
+        status, _, answer = call(srv, "POST", url)
+        assert (status, json.loads(answer)) == (404, {"error": web.tr("no such address")}), url
 
 
 # --------------------------------------------------------------------------

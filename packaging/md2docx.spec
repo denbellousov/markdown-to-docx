@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller 6.22.3: приложение md2docx, точка входа — md2docx_app.py.
+# PyInstaller 6.22.3: приложение md2docx, точка входа — md2docx_app.py, окно — pywebview 6.2.1
+# (его файлы — js, на Windows ещё lib — собирает собственный хук pywebview).
 #
 # Сборка из корня репозитория:  pyinstaller --noconfirm packaging/md2docx.spec
 #   macOS   → dist/md2docx.app — оконное, onedir внутри пакета .app;
@@ -7,7 +8,6 @@
 # Значок packaging/icon.png PyInstaller сам переводит в .icns и .ico через Pillow
 # (Pillow и так ставится из requirements.txt).
 import os
-import platform
 import sys
 import sysconfig
 
@@ -22,18 +22,16 @@ a = Analysis(
     datas=[
         # переводы md2docx ищет рядом со своим модулем, то есть в sys._MEIPASS/locales
         (os.path.join(ROOT, "locales"), "locales"),
-        # значок окна Tk: md2docx_app.py берёт packaging/icon.png рядом с модулями
-        (ICON, "packaging"),
     ],
 )
 pyz = PYZ(a.pure)
 
 if sys.platform == "darwin":
-    # Минимальная macOS — как у Python, которым собираем (python.org 3.13: 10.13);
-    # сборке для Apple Silicon — не ниже 11.0: более ранних macOS для arm64 нет.
-    min_macos = sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET") or "10.13"
-    if platform.machine() == "arm64":
-        min_macos = max(min_macos, "11.0", key=lambda v: tuple(int(n) for n in v.split(".")))
+    # Минимальная macOS — 11.3 или выше, если её требует Python, которым собираем (python.org 3.13:
+    # 10.13): окно pywebview на каждой навигации спрашивает WKNavigationAction.shouldPerformDownload,
+    # а он появился в macOS 11.3.
+    min_macos = max(sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET") or "10.13", "11.3",
+                    key=lambda v: tuple(int(n) for n in v.split(".")))
     exe = EXE(
         pyz,
         a.scripts,
@@ -41,7 +39,7 @@ if sys.platform == "darwin":
         exclude_binaries=True,
         name="md2docx",
         console=False,
-        argv_emulation=False,  # с Tk не совместима (документация PyInstaller), -psn_ приложение отбрасывает само
+        argv_emulation=False,  # файлы, брошенные на значок, приложению не нужны; -psn_ оно отбрасывает само
         upx=False,
     )
     coll = COLLECT(exe, a.binaries, a.datas, name="md2docx", upx=False)

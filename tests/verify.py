@@ -154,6 +154,7 @@ PLACEHOLDERS = sorted(tuple(t.split("{alt}")) for t in {"[image: {alt}]"} | {
     json.loads(p.read_text(encoding="utf-8"))["[image: {alt}]"]
     for p in (Path(__file__).resolve().parents[1] / "locales").glob("*.json")})
 PLACEHOLDER_RE = re.compile("|".join(re.escape(head) + r"[^\]]*" + re.escape(tail) for head, tail in PLACEHOLDERS))
+CYRILLIC_RE = re.compile("[\u0400-\u04ff]")  # §3.2: есть в тексте документа — язык ru-RU, иначе en-US
 
 # --------------------------------------------------------------------------
 # §5 — порядок дочерних элементов (ECMA-376). Кортеж = равноправные имена.
@@ -1505,8 +1506,13 @@ def check_defaults(rep, dx: Docx):
                 rep.err("defaults", f"docDefaults {tag}={v}, ожидалось 22 (11 pt)")
         lang = rpr.find(q("lang"))
         got = {k: wa(lang, k) for k in ("val", "eastAsia", "bidi")}
-        if got != {"val": "ru-RU", "eastAsia": "ru-RU", "bidi": "ar-SA"}:
-            rep.err("defaults", f"docDefaults lang {got}, ожидалось ru-RU/ru-RU/ar-SA")
+        # язык — по тексту документа; надпись заглушки картинки на языке интерфейса не в счёт, её alt — в счёт
+        text = "".join(t.text or "" for t in dx.body.iter(q("t")))
+        for part in {part for pair in PLACEHOLDERS for part in pair}:
+            text = text.replace(part, "")
+        want = "ru-RU" if CYRILLIC_RE.search(text) else "en-US"
+        if got != {"val": want, "eastAsia": want, "bidi": "ar-SA"}:
+            rep.err("defaults", f"docDefaults lang {got}, ожидалось {want}/{want}/ar-SA")
     if ppr is None:
         rep.err("defaults", "нет docDefaults/pPrDefault/pPr")
     else:

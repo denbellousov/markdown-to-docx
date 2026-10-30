@@ -48,7 +48,7 @@ try:  # Pillow нужен только для точного замера шир
 except ImportError:  # pragma: no cover
     ImageFont = None
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ---------------------------------------------------------------- константы
 
@@ -208,6 +208,7 @@ HIDDEN_RE = re.compile(r"<(script|style|template)\b.*?</\1\s*>", re.S | re.I)  #
 BLOCK_TAG_RE = re.compile(r"</?(?:p|div|li|ul|ol|tr|td|th|h[1-6]|table|thead|tbody|blockquote|pre|hr|"
                           r"section|article|header|footer|details|summary|dl|dt|dd)\b[^>]*>", re.I)
 INVALID_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+CYRILLIC = re.compile("[\u0400-\u04ff]")  # есть в тексте — язык документа ru-RU, иначе en-US (§3.2)
 VT_FF = re.compile(r"&#(?:0*1[12]|[xX]0*[bBcC]);")  # сущности &#11; и &#12; в любой записи
 WORD_GAP = re.compile(r"[ \t\u2002\u2003\u2009\u200b]+")
 # перенос после дефиса и тире (§3.4); после «-» перед цифрой — только за цифрой: «2026-|10», а «Ф-123»
@@ -767,7 +768,7 @@ def setup_styles(doc):
     rpr.clear()
     for child in (E("w:rFonts", {"w:ascii": HN, "w:eastAsia": "Times New Roman", "w:hAnsi": HN, "w:cs": HN}),
                   E("w:sz", {"w:val": 22}), E("w:szCs", {"w:val": 22}),
-                  E("w:lang", {"w:val": "ru-RU", "w:eastAsia": "ru-RU", "w:bidi": "ar-SA"})):
+                  E("w:lang", {"w:val": "en-US", "w:eastAsia": "en-US", "w:bidi": "ar-SA"})):  # см. set_language()
         rpr.append(child)
     ppr = defaults.find(qn("w:pPrDefault")).find(qn("w:pPr"))
     ppr.clear()
@@ -804,6 +805,19 @@ def setup_styles(doc):
                         E("w:basedOn", {"w:val": "DefaultParagraphFont"}),
                         E("w:uiPriority", {"w:val": 99}), E("w:unhideWhenUsed"),
                         E("w:rPr", None, E("w:color", {"w:val": "0563C1"}), E("w:u", {"w:val": "single"}))))
+
+
+def set_language(doc):
+    """§3.2: язык документа (по нему Word проверяет правописание) — ru-RU, если в тексте документа есть
+    кириллица, иначе en-US. Решает текст, попавший в документ: комментарии, адреса ссылок и картинок
+    не в счёт, надпись заглушки картинки (она на языке интерфейса) — тоже, её подпись (alt) — в счёт."""
+    text = "".join(t.text or "" for t in doc.element.body.iter(qn("w:t")))
+    for part in tr("[image: {alt}]").split("{alt}"):
+        text = text.replace(part, "")
+    lang = "ru-RU" if CYRILLIC.search(text) else "en-US"
+    rpr = doc.styles.element.find(qn("w:docDefaults")).find(qn("w:rPrDefault")).find(qn("w:rPr"))
+    for name in ("w:val", "w:eastAsia"):
+        rpr.find(qn("w:lang")).set(qn(name), lang)
 
 
 def new_document(title):
@@ -1040,6 +1054,7 @@ class Converter:
             # дошедшей до низа страницы, дал бы пустую последнюю страницу); пустой md — пустой абзац
             last = [spacing(0, 0, 20, "exact"), tiny_rpr()] if self.after_table else []
             self.body.sectPr.addprevious(make_p(last))
+        set_language(self.doc)
         return sections, auto_tables
 
     def setup_section(self, orient):

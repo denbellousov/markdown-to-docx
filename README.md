@@ -11,8 +11,8 @@ a `.md` file into a Word document with Word's built-in heading styles, full-widt
 column widths are measured from the actual text, and mixed portrait and landscape pages:
 a table too wide for a portrait page moves to a landscape page by itself, together with its
 heading. md2docx is one Python file that needs no pandoc, no LibreOffice and no network,
-plus an optional browser interface that runs on `127.0.0.1`, also as a ready-made app for
-macOS and Windows.
+plus an optional interface that runs on `127.0.0.1`: in the browser or as a ready-made app for
+macOS and Windows with a window of its own.
 
 ![A portrait page with headings, a table and lists, and a landscape page with a wide eight-column table, both produced by md2docx from samples/08-showcase.md](docs/images/pages.png)
 
@@ -55,15 +55,23 @@ No Python needed: download the app for your system from the
 | macOS, Intel | [md2docx-macos-intel.zip](https://github.com/denbellousov/markdown-to-docx/releases/latest/download/md2docx-macos-intel.zip) |
 | Windows, 64-bit | [md2docx-windows-x64.exe](https://github.com/denbellousov/markdown-to-docx/releases/latest/download/md2docx-windows-x64.exe) |
 
-The app opens the [browser interface](#browser-interface) and shows a small window with its
-address. Quitting the app or closing that window stops md2docx and deletes its temporary
-files; opening the app again while it runs brings the page back.
+The macOS apps need macOS 11.3 or later.
+
+The app shows the [md2docx interface](#browser-interface) in its own window, without a browser.
+Closing the window or quitting the app stops md2docx and deletes its temporary files. On Windows
+the app uses Microsoft Edge WebView2 Runtime, which comes with Windows 11 and is already on most
+Windows 10 computers; if it is missing, the app says so and gives the download address.
 
 The apps are not signed, so the system asks once before the first start:
 
-- **macOS:** unzip, move md2docx to Applications and open it. When macOS says it cannot verify
-  the app, open System Settings › Privacy & Security, click "Open Anyway" next to the message
-  about md2docx and confirm.
+- **macOS 15 and later:** unzip, move md2docx to Applications and open it. macOS says that Apple
+  could not verify md2docx: click "Done", not "Move to Trash". Then open System Settings ›
+  Privacy & Security; near the bottom, next to the message "“md2docx.app” was blocked to
+  protect your Mac.", click "Open Anyway" and confirm with "Open Anyway" once more (macOS may
+  ask for your password). From then on md2docx opens as usual.
+- **macOS 11.3–14:** unzip and move md2docx to Applications. In the Finder, Control-click
+  md2docx, choose "Open" from the shortcut menu, then click "Open". From then on md2docx opens
+  as usual.
 - **Windows:** if SmartScreen says "Windows protected your PC", click "More info", then
   "Run anyway".
 
@@ -213,6 +221,9 @@ explicitly marked as landscape are never touched.
 
 - A4, 2 cm margins on all sides in both orientations, no headers or footers.
 - Body text: Helvetica Neue 11 pt, 8 pt after each paragraph, left-aligned.
+- Document language (for Word's spelling and grammar check): Russian if the text of the document
+  has Cyrillic letters, otherwise English (US); YAML front matter, HTML comments, link and image
+  addresses and the `[image: …]` label do not count.
 - Headings: Word's built-in Heading 1–6 styles, bold, 18/16/14/12/11/11 pt, Heading 6 in
   italics.
 - Tables: full text width, thin grey borders, a grey bold header row at the top of the table
@@ -346,8 +357,9 @@ The command line, the browser page and the app speak English, Chinese (Simplifie
 Spanish, French, Arabic, Portuguese (Brazil), Russian, German and Japanese. The language is
 picked automatically: `MD2DOCX_LANG` if it is set, otherwise `LANGUAGE`, `LC_ALL`,
 `LC_MESSAGES` or `LANG`, otherwise the language of the operating system; any other language
-falls back to English. The page follows the browser's languages and has a switch in its
-header. Only messages and the `[image: …]` placeholder are translated, never your text.
+falls back to English. The page follows the browser's languages (in the app, the system's) and
+has a switch in its header. Only messages and the `[image: …]` placeholder are translated,
+never your text.
 
 ```sh
 MD2DOCX_LANG=de python3 md2docx.py report.md   # messages in German
@@ -359,8 +371,8 @@ Translations live in `locales/<language>.json`, keyed by the English text.
 
 ![The md2docx browser interface after converting three sample files: the orientation switch, the result of each file and the download buttons](docs/images/web-ui.png)
 
-The [app](#download-the-app) opens this page by itself. Without the app, start it from the
-command line:
+The [app](#download-the-app) shows this page in its own window. Without the app, start it from
+the command line:
 
 ```sh
 python3 md2docx_web.py               # http://127.0.0.1:51536/ — opens the browser
@@ -395,9 +407,9 @@ apply to `.docx` files.
   after restarting the server, reload the page.
 - The default port 51536 is fixed for the project; its pair 61536 is reserved too and stays
   unused, since there is no separate backend. If 51536 is busy, `md2docx_web.py` says so and
-  exits; it never picks another port by itself. The app instead opens the md2docx that is
-  already running there, and if another program holds the port, it takes a free one and shows
-  the address in its window.
+  exits; it never picks another port by itself. The app instead takes any free port: its
+  window needs no fixed address. The theme and language chosen on the page are remembered per
+  address, so a window on another port starts with the defaults.
 - Source files are not changed: the browser sends copies, which live in the server's
   temporary folder. Only the last job is kept: a new selection deletes the copies and results
   of the previous one, and stopping the server (quitting the app, Ctrl+C, closing the
@@ -465,12 +477,13 @@ out of the project. The tests expect Russian messages whatever your system langu
 (`tests/conftest.py` sets `MD2DOCX_LANG=ru`); `tests/test_i18n.py` checks that every
 translation has exactly the strings and placeholders of the code, and the English output.
 
-The apps are built with PyInstaller, on the system they are for:
+The apps are built with PyInstaller, on the system they are for; the window comes from
+pywebview, which `python3 md2docx_app.py` needs too:
 
 ```sh
-pip install pyinstaller
+pip install pyinstaller pywebview
 pyinstaller --noconfirm packaging/md2docx.spec   # → dist/md2docx.app or dist/md2docx.exe
-python3 packaging/smoke.py                       # with the app running: convert a sample through it
+python3 packaging/smoke.py                       # with the app on port 51536: convert a sample through it
 ```
 
 GitHub Actions (`.github/workflows/apps.yml`) builds them for macOS (Apple silicon and Intel)

@@ -42,27 +42,38 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt pyinstaller==6.22.3
+        run: python -m pip install -r requirements.txt pyinstaller==6.22.3 pywebview==6.2.1
 
       - name: Build
         run: pyinstaller --noconfirm packaging/md2docx.spec
 
-      # Два запуска: с аргументами (режим md2docx_web.py, без окна) и без них — окно Tk,
-      # сервер в потоке, браузер. Второй проверяет, что Tk стартует в собранном приложении:
-      # если окно не создалось, приложение останавливает сервер и тест падает.
+      # Два запуска: с аргументами (режим md2docx_web.py, без окна) и без них — сервер в потоке
+      # и окно pywebview. Оба раза приложение должно дожить до конца теста: если окно
+      # не создалось, приложение останавливает сервер и выходит. Без аргументов ещё проверяется,
+      # что окно показывает страницу: её запрашивает само окно (в журнале сервера второй
+      # «GET / 200», первый — от smoke.py). На macOS после kill приложение должно выйти само
+      # (за 10 с) и удалить свои временные каталоги.
       - name: Smoke test (macOS)
         if: runner.os == 'macOS'
         run: |
           smoke() {  # $1 — порт, дальше — аргументы приложения
             local port=$1 status=0
             shift
-            dist/md2docx.app/Contents/MacOS/md2docx "$@" &
+            dist/md2docx.app/Contents/MacOS/md2docx "$@" > app.log 2>&1 &
             local pid=$!
             python packaging/smoke.py "http://127.0.0.1:$port/" || status=$?
+            if [ $# -eq 0 ]; then
+              for _ in $(seq 30); do [ "$(grep -c ' GET / 200' app.log)" -ge 2 ] && break; sleep 1; done
+              [ "$(grep -c ' GET / 200' app.log)" -ge 2 ] || { echo "the window did not load the page"; status=1; }
+            fi
+            kill -0 "$pid" 2>/dev/null || { echo "the app exited during the smoke test"; status=1; }
             kill "$pid" 2>/dev/null || true
             for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+            kill -0 "$pid" 2>/dev/null && { echo "SIGTERM did not stop the app"; status=1; }
             kill -9 "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
+            ls -d "${TMPDIR:-/tmp}"/md2docx-web-* 2>/dev/null && { echo "temporary files left behind"; status=1; }
+            [ "$status" -eq 0 ] || cat app.log
             return "$status"
           }
           smoke 61536 --no-browser --port 61536
@@ -73,23 +84,38 @@ jobs:
         shell: pwsh
         run: |
           function Invoke-Smoke([int] $Port, [string[]] $AppArgs) {
-            $start = @{ FilePath = 'dist\md2docx.exe'; PassThru = $true }
-            if ($AppArgs) {
-              # вывод — в файлы, чтобы при провале было что читать; без аргументов потоков
-              # вывода нет, как при двойном щелчке (sys.stdout is None)
-              $start += @{ ArgumentList = $AppArgs
-                           RedirectStandardOutput = 'app-out.log'; RedirectStandardError = 'app-err.log' }
-            }
+            # вывод — в файлы: по журналу сервера видно, что окно запросило страницу, и при провале
+            # есть что читать (запуск без потоков вывода, как двойным щелчком, проверяет test_app.py)
+            $out = Join-Path $PWD "app-$Port-out.log"; $err = Join-Path $PWD "app-$Port-err.log"  # .NET не знает $PWD
+            $start = @{ FilePath = 'dist\md2docx.exe'; PassThru = $true
+                        RedirectStandardOutput = $out; RedirectStandardError = $err }
+            if ($AppArgs) { $start.ArgumentList = $AppArgs }
             $app = Start-Process @start
             try {
               python packaging/smoke.py "http://127.0.0.1:$Port/"
               $code = $LASTEXITCODE
+              if (-not $AppArgs) {
+                $loads = {  # журнал открыт приложением на запись — читаем, не мешая ему писать
+                  try {
+                    $fs = [IO.File]::Open($out, 'Open', 'Read', 'ReadWrite')
+                    try { [regex]::Matches([IO.StreamReader]::new($fs).ReadToEnd(), ' GET / 200').Count } finally { $fs.Dispose() }
+                  } catch { 0 }
+                }
+                $deadline = (Get-Date).AddSeconds(30)
+                while ((& $loads) -lt 2 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+                if ((& $loads) -lt 2) {
+                  $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+                  Write-Host "the window did not load the page (WebView2 Runtime: '$((Get-ItemProperty $key -ErrorAction SilentlyContinue).pv)')"
+                  $code = 1
+                }
+              }
+              if ($app.HasExited) { Write-Host 'the app exited during the smoke test'; $code = 1 }
             } finally {
               # onefile — два процесса: загрузчик и Python; /T завершает оба
               taskkill /PID $app.Id /T /F *> $null
             }
             if ($code -ne 0) {
-              if ($AppArgs) { Get-Content app-out.log, app-err.log -ErrorAction SilentlyContinue }
+              Get-Content $out, $err -ErrorAction SilentlyContinue
               throw "smoke test failed on port $Port"
             }
           }

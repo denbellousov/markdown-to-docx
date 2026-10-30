@@ -189,6 +189,30 @@ def test_sample_cli_and_verify(md, outdir):
     assert res.returncode == 0, f"сверщик нашёл расхождения:\n{res.stdout}\n{res.stderr}"
 
 
+@pytest.mark.parametrize("text, lang", [
+    ("# Report\n\nPlain English.\n", "en-US"),
+    ("# Report\n\nOne word in Russian: отчёт.\n", "ru-RU"),
+    ("---\ntitle: Отчёт\n---\n\n# Report\n", "en-US"),  # front matter в документ не попадает
+    ("# Report\n\n<!-- черновик -->\n\nPlain English.\n", "en-US"),
+    ("# Report\n\nSee [the page](https://example.com/отчёт).\n", "en-US"),
+    ("# Report\n\n![Diagram](схема.png)\n", "en-US"),  # картинка вставлена, кириллица только в пути
+    ("# Report\n\n![Diagram](нет.png)\n", "en-US"),  # заглушка: «[изображение: …]» — язык интерфейса
+    ("# Report\n\n![Схема](нет.png)\n", "ru-RU"),  # подпись заглушки — текст документа
+], ids=["english", "one-russian-word", "russian-front-matter-only", "russian-comment-only", "russian-url-only",
+        "russian-image-path-only", "russian-placeholder-label-only", "russian-placeholder-alt"])
+def test_document_language_follows_the_text(tmp_path, text, lang):
+    """§3.2: Word проверяет правописание на языке текста — есть кириллица, ru-RU, иначе en-US.
+    Решает текст, попавший в документ; сверщик приходит к тому же языку сам."""
+    _png(tmp_path / "схема.png", 300, 150)
+    md, out, _, _ = run_md(tmp_path, "lang", text)
+    with zipfile.ZipFile(out) as z:
+        styles = etree.fromstring(z.read("word/styles.xml"))
+    got = styles.find("w:docDefaults/w:rPrDefault/w:rPr/w:lang", NS)
+    assert {k: wa(got, k) for k in ("val", "eastAsia", "bidi")} == {"val": lang, "eastAsia": lang, "bidi": "ar-SA"}
+    res = run_verify(md, out)
+    assert res.returncode == 0, f"сверщик нашёл расхождения:\n{res.stdout}\n{res.stderr}"
+
+
 # --------------------------------------------------------------------------
 # 2. Ориентация: маркеры, флаг, автоальбомная
 # --------------------------------------------------------------------------
@@ -2564,6 +2588,13 @@ def _compat_12(root):
     raise AssertionError("нет compatibilityMode")
 
 
+def _russian_lang(root):
+    lang = root.find("w:docDefaults/w:rPrDefault/w:rPr/w:lang", NS)
+    assert lang is not None, "нет docDefaults lang"
+    lang.set(q("val"), "ru-RU")
+    lang.set(q("eastAsia"), "ru-RU")
+
+
 def _drop_altname(root):
     for f in root.iter(q("font")):
         if wa(f, "name") == V.HN:
@@ -2649,6 +2680,7 @@ RED_PROBES = [
     ("reorder-tblPr", "02-tables", "word/document.xml", _reorder_tblpr, {"order"}),
     ("add-tblHeader", "02-tables", "word/document.xml", _add_tbl_header, {"table-format"}),
     ("compat-12", "01-headings", "word/settings.xml", _compat_12, {"defaults"}),
+    ("russian-lang", "01-headings", "word/styles.xml", _russian_lang, {"defaults"}),
     ("drop-altName", "01-headings", "word/fontTable.xml", _drop_altname, {"fonts"}),
     ("inject-markup", "01-headings", "word/document.xml", _inject_markup, {"markup"}),
     ("empty-section", "01-headings", "word/document.xml", _empty_section, {"sections"}),

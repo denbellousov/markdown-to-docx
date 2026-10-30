@@ -49,6 +49,7 @@ MAX_FILE = 60 * MB      # на один файл
 MAX_JOB = 200 * MB      # на задание — все файлы одного выбора в браузере
 MAX_JSON = 64 * 1024    # тело запроса конвертации
 CHUNK = MB
+KEEPALIVE = 10          # секунд между пробелами в ответе, пока открыто окно «Сохранить» приложения
 MD_SUFFIXES = (".md", ".markdown")
 DOCX_SUFFIX = ".docx"   # готовый документ: вернуть подсказки шрифтов, как --fix-fonts
 GONE = "the results are out of date — choose the files again"  # задание удалено: его заменило новое
@@ -207,11 +208,12 @@ def run_job(job, sources, options):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=PORT, tmp_parent=None, app=False):
+    def __init__(self, port=PORT, tmp_parent=None, app=False, save_as=None):
         if port and port_taken(port):
             raise OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
         super().__init__((HOST, port), Handler)
         self.app = app  # запущен приложением md2docx, а не из терминала: так и подсказывает страница
+        self.save_as = save_as  # приложение: окно «Сохранить» по имени файла → путь или None («Отмена»)
         self.port = self.server_address[1]
         self.hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
         self.token = secrets.token_urlsafe(32)
@@ -286,9 +288,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.upload(job)
             if action == ["convert"] and method == "POST":
                 return self.convert(job)
-            if action == ["zip"] and method == "GET":
+            take = method == "GET" or (method == "POST" and self.server.save_as is not None)  # POST — сохранить
+            if action == ["zip"] and take:
                 return self.zip(job)
-            if (len(action) == 2 and action[0] == "docx" and method == "GET"
+            if (len(action) == 2 and action[0] == "docx" and take
                     and re.fullmatch(r"[0-9]{1,9}", action[1])):
                 return self.download(job, int(action[1]))
         return self.fail(404, tr("no such address"))
@@ -344,6 +347,45 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             shutil.copyfileobj(f, self.wfile, CHUNK)
 
+    def deliver(self, path, ctype, name):
+        """GET — файл в ответе. POST (приложение) — файл туда, куда укажут в окне «Сохранить»:
+        загрузка WebKit поверх существующего файла молча не пишет, а «Заменить» в окне уже нажали."""
+        if self.command == "GET":
+            return self.send_file(path, ctype, name)
+        try:
+            f = open(path, "rb")  # до окна: пока оно открыто, прогон могут заменить новым
+        except FileNotFoundError:
+            return self.fail(404, tr("the result has been updated — download it again"))
+        # окно открыто сколько угодно, а WebKit ждёт данных не больше минуты: заголовки — сразу,
+        # пока окно открыто — пробел раз в KEEPALIVE секунд (JSON их пропускает), итог — в теле
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.common_headers()
+        self.end_headers()
+        done = threading.Event()
+
+        def keepalive():
+            try:
+                while not done.wait(KEEPALIVE):
+                    self.wfile.write(b" ")
+            except OSError:  # окно закрыли — ответ уже некому читать
+                pass
+
+        writer = threading.Thread(target=keepalive, daemon=True)
+        writer.start()
+        with f:
+            try:
+                target = self.server.save_as(name)
+                if target:
+                    with open(target, "wb") as out:
+                        shutil.copyfileobj(f, out, CHUNK)
+                answer = {"saved": bool(target)}
+            except OSError as exc:
+                answer = {"error": md2docx.describe_error(exc, None)}
+        done.set()
+        writer.join()
+        self.wfile.write(json.dumps(answer, ensure_ascii=False).encode())
+
     # --- действия
 
     def page(self):
@@ -351,8 +393,11 @@ class Handler(BaseHTTPRequestHandler):
         values = {"NONCE": nonce, "TOKEN": self.server.token, "VERSION": html.escape(md2docx.__version__),
                   "MAX_FILE": str(self.server.max_file), "MAX_JOB": str(self.server.max_job),
                   "I18N": page_catalogs(), "LANGS": script_json(list(md2docx.LANGUAGES.items())),
-                  "APP": script_json(self.server.app)}
-        body = re.sub(r"__(NONCE|TOKEN|VERSION|MAX_FILE|MAX_JOB|I18N|LANGS|APP)__", lambda m: values[m[1]], PAGE)
+                  "APP": script_json(self.server.app),
+                  # окно приложения называет язык своего пакета, а не выбранный в системе
+                  "SYSLANG": script_json(md2docx.system_language() if self.server.app else None)}
+        body = re.sub(r"__(NONCE|TOKEN|VERSION|MAX_FILE|MAX_JOB|I18N|LANGS|APP|SYSLANG)__",
+                      lambda m: values[m[1]], PAGE)
         csp =(f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; "
                "img-src data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; "
                "base-uri 'none'")
@@ -471,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
         item = results[n] if n < len(results) else None
         if not item or "file" not in item:
             return self.fail(404, tr("no such result"))
-        self.send_file(item["file"], DOCX, item["name"])
+        self.deliver(item["file"], DOCX, item["name"])
 
     def zip(self, job):
         path = job.dir / "md2docx.zip"
@@ -489,7 +534,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(404, tr(GONE))
         if not done:
             return self.fail(404, tr("no finished files"))
-        self.send_file(path, "application/zip", "md2docx.zip")
+        self.deliver(path, "application/zip", "md2docx.zip")
 
 
 # ---------------------------------------------------------------- запуск
@@ -723,6 +768,7 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
   const I18N = __I18N__;
   const LANGS = __LANGS__;
   const APP = __APP__;
+  const SYSLANG = __SYSLANG__;
   const SVG = "http://www.w3.org/2000/svg";
   const $ = (id) => document.getElementById(id);
   const root = document.documentElement;
@@ -742,7 +788,7 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
   function preferred() {
     let saved = null;
     try { saved = localStorage.getItem("lang"); } catch (e) {}
-    for (const tag of [saved, ...(navigator.languages || []), navigator.language]) {
+    for (const tag of [saved, SYSLANG, ...(navigator.languages || []), navigator.language]) {
       const code = String(tag || "").toLowerCase().split(/[-_]/)[0];
       if (LANGS.some((l) => l[0] === code)) return code;
     }
@@ -831,6 +877,13 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;ma
     if (busy || a.getAttribute("aria-disabled") === "true") return;
     a.setAttribute("aria-disabled", "true");
     try {
+      if (APP) {
+        const r = await request("POST", url);
+        let data;
+        try { data = await r.json(); } catch (err) { throw new Error(offline()); }
+        if (data.error) throw new Error(data.error);
+        return;
+      }
       const r = await request("GET", url);
       let blob;
       try { blob = await r.blob(); } catch (err) { throw new Error(offline()); }
