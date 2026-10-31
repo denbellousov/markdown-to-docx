@@ -89,7 +89,15 @@ def window(url, stop):
 
     win.events.initialized += initialized
     win.events.closing += stop  # «Завершить» в меню и Dock выходит через exit(): finally в app() не наступит
-    on_stop_signals(win.destroy)
+
+    def close():
+        # сразу после загрузки страницы pywebview встраивает в неё свой JS и ждёт ответа без срока:
+        # окно, закрытое в этот момент, оставляет его поток ждать вечно, и Python не выходит;
+        # loaded — встраивание закончено, без него через 5 с закрываем всё равно (тест сборки ждёт 10 с)
+        win.events.loaded.wait(5)
+        win.destroy()
+
+    on_stop_signals(close)
     # тема и язык, выбранные на странице, сохраняются между запусками; на Windows — в своей папке,
     # а не в общей для всех приложений на pywebview (на macOS данные и так у каждого приложения свои)
     local = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else None

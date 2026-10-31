@@ -76,6 +76,14 @@ class Event(list):
         return self
 
 
+class Loaded(threading.Event):
+    """Событие loaded окна: запоминает, сколько его готовы ждать."""
+
+    def wait(self, timeout=None):
+        self.timeout = timeout
+        return super().wait(timeout)
+
+
 @pytest.fixture
 def webview(monkeypatch):
     """Подмена pywebview: start() сначала зовёт обработчики initialized (renderer — как у настоящего окна),
@@ -85,8 +93,9 @@ def webview(monkeypatch):
                                  on_stop=None)
 
     def create_window(*args, **kwargs):
-        win = types.SimpleNamespace(args=args, kwargs=kwargs, destroy=lambda: None,
-                                    events=types.SimpleNamespace(initialized=Event(), closing=Event()))
+        win = types.SimpleNamespace(args=args, kwargs=kwargs, destroyed=False, events=types.SimpleNamespace(
+            initialized=Event(), closing=Event(), loaded=Loaded()))
+        win.destroy = lambda: setattr(win, "destroyed", True)
         seen.windows.append(win)
         return win
 
@@ -154,8 +163,28 @@ def test_window_wiring(tmp_dirs, monkeypatch, webview):
     assert servers[-1].save_as is app.save_as, "«Скачать .docx» и .zip не откроют окно «Сохранить»"
     assert webview.settings == {}, "скачивание силами окна: WebKit не заменяет существующий файл"
     assert webview.started == {"private_mode": False, "storage_path": None}
-    assert webview.on_stop is win.destroy, "kill и закрытый Терминал не закроют окно"
+    win.events.loaded.set()
+    webview.on_stop()
+    assert win.destroyed, "kill и закрытый Терминал не закроют окно"
     assert webview.after_closing == (False, []), "после «Завершить» сервер работает или остались временные файлы"
+
+
+def test_kill_right_after_page_load_waits_for_pywebview(tmp_dirs, monkeypatch, webview):
+    """kill сразу после загрузки страницы закрывает окно, когда pywebview встроил в неё свой JS (событие
+    loaded): иначе его поток вечно ждёт ответа закрытой страницы, и приложение не выходит. Ждать loaded
+    вечно тоже нельзя: тест сборки даёт приложению на выход после kill 10 с."""
+    monkeypatch.setattr(app.web, "PORT", free_port())
+    assert app.app() == 0
+    (win,) = webview.windows
+    closer = threading.Thread(target=webview.on_stop, daemon=True)
+    closer.start()
+    closer.join(0.3)
+    assert not win.destroyed, "окно закрыто, пока pywebview встраивает в страницу свой JS"
+    win.events.loaded.set()
+    closer.join(5)
+    assert win.destroyed, "kill не закрыл окно после загрузки страницы"
+    timeout = getattr(win.events.loaded, "timeout", None)
+    assert timeout is not None and 0 < timeout < 10, f"kill ждёт loaded без срока или не ждёт его: {timeout}"
 
 
 def test_windows_keeps_window_data_in_its_own_folder(tmp_dirs, monkeypatch, webview):
